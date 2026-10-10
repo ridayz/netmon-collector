@@ -15,6 +15,7 @@ class RosApi {
   connect() {
     return new Promise((res, rej) => {
       this.sock = net.connect(this.port, this.host);
+      this.sock.on('error', () => { try { this.sock.destroy(); } catch {} });
       this.buf = Buffer.alloc(0); this.queue = []; this.sent = []; this.waiters = [];
       const t = setTimeout(() => rej(new Error('connect timeout ' + this.host)), this.timeout);
       this.sock.on('connect', () => { clearTimeout(t); res(); });

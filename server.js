@@ -112,3 +112,5 @@ const server = http.createServer(async (req, res) => {
   } catch (e) { send(res, 500, { ok: false, error: String(e.message || e) }); }
 });
 server.listen(PORT, () => console.log('netmon-collector on :' + PORT));
+process.on('unhandledRejection', e => console.error('[unhandledRejection]', e && e.message || e));
+process.on('uncaughtException', e => console.error('[uncaughtException]', e && e.message || e));
