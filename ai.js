@@ -28,7 +28,7 @@ Aturan:
 \`\`\`ros-cmd
 {"label":"ringkasan singkat","path":"/ip/dns/","args":{"servers":"8.8.8.8,1.1.1.1"}}
 \`\`\`
-  Path yang boleh: /interface/, /ip/address/, /ip/dns/, /ip/route/, /ip/firewall/filter/, /ip/dhcp-server/, /system/identity/, /system/note/. Args sesuai API RouterOS (contoh untuk set: pakai "args" dengan kunci atribut, misal "disabled":"no" atau "numbers":"ether3"). Usulan hanya jadi tiket, user harus setujui dulu. Jangan klaim sudah dikerjakan.
+  Dilarang mengusulkan path user, reset, atau reboot. Args sesuai API RouterOS (contoh untuk set: kunci atribut, misal "disabled":"no" atau "numbers":"ether3"). Usulan hanya jadi tiket, user harus setujui dulu. Jangan klaim sudah dikerjakan.
 - Jelaskan dampak perubahan sebelum mengusulkannya, terutama yang bisa memutus koneksi.
 - Jawab singkat dan to-the-point. Format: vonis dulu (1-2 baris), lalu bukti (poin-poin dari data), lalu saran. Tanpa basa-basi pembuka.`;
 

@@ -78,14 +78,11 @@ async function rosExport(host, user, pass, port) {
   } finally { api.close(); }
 }
 
-// allowlist perintah tulis yang boleh diusulkan AI (path RouterOS API). Di luar ini ditolak.
-const ROS_ALLOW = [/^\/interface\//, /^\/ip\/address\//, /^\/ip\/dns\//, /^\/ip\/route\//, /^\/ip\/firewall\/filter\//, /^\/ip\/dhcp-server\//, /^\/system\/identity\//, /^\/system\/note\//];
-const ROS_DENY = /\/user|\/reset|\/reboot|\/export|\/file|\/tool|\/password|\/certificate/i;
+// denylist perintah tulis yang diusulkan AI: hanya user, reset, reboot
+const ROS_DENY = /\/user|\/reset|\/reboot/i;
 function vetRosCmd(path, args) {
   if (!path || typeof path !== 'string') return 'path kosong';
   if (ROS_DENY.test(path)) return 'path diblokir: ' + path;
-  if (!ROS_ALLOW.some(r => r.test(path))) return 'path di luar allowlist: ' + path;
-  if (args && Object.keys(args).some(k => /remove|\.id$|^numbers$/i.test(k) && /\*/.test(String(args[k])))) return 'wildcard ditolak';
   return null;
 }
 // tiket approve untuk aksi tulis (dongkrak 5 menit)
