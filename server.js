@@ -172,6 +172,13 @@ const server = http.createServer(async (req, res) => {
       const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, body.ctx || {}) });
       return send(res, 200, { ok: true, model, reply });
     }
+    if (u.pathname === '/api/iface-enable') {
+      const ip = q.ip, iface = q.iface, user = q.user || process.env.W_USER || '', pass = q.pass || process.env.W_PASS || '';
+      if (!ip || !iface) throw new Error('param ip & iface wajib');
+      if (!user || !pass) throw new Error('W_USER/W_PASS belum diisi di .env');
+      await rosQuery(ip, user, pass, '/interface/set', { numbers: iface, disabled: 'no' }, D.port);
+      return send(res, 200, { ok: true, ip, iface, action: 'enable' });
+    }
     if (u.pathname === '/api/ai-act' && req.method === 'POST') {
       const body = await new Promise((resolve, reject) => {
         let b = ''; req.on('data', c => { b += c; });
