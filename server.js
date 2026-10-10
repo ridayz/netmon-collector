@@ -24,7 +24,8 @@ const D = {
   user: process.env.ROS_USER || 'netmon', pass: process.env.ROS_PASS || '',
   port: Number(process.env.ROS_PORT || 8728), community: process.env.SNMP_COMMUNITY || 'public',
 };
-const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify(obj)); };
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...CORS }); res.end(JSON.stringify(obj)); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function discover(q) {
@@ -125,6 +126,7 @@ async function traffic(q) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
   try {
     const u = new URL(req.url, 'http://x');
     const q = Object.fromEntries(u.searchParams);
