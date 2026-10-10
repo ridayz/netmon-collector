@@ -77,6 +77,18 @@ class RosApi {
     };
     return collect();
   }
+  // mentah: kembalikan kalimat per kalimat (buat /export yang outputnya baris teks)
+  async rawSentences(words) {
+    const out = [];
+    let s = await this.talk(words);
+    for (;;) {
+      out.push(s);
+      const t = s[0] || '';
+      if (t === '!done' || t === '!fatal') return out;
+      if (t === '!trap') throw new Error('trap: ' + s.slice(1).join(' '));
+      s = await this.talk(null);
+    }
+  }
   close() { try { this.sock.destroy(); } catch {} }
 }
 
