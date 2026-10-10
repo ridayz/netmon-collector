@@ -26,4 +26,4 @@ Query `user/pass/community` opsional — kalau kosong pakai `.env`.
 ```
 
 ## Status
-- 2026-10-10: tembus 192.168.18.6 (DONCUL-HOME, hEX, ROS 6.49.11) via API. SNMP community public timeout (community asli belum dikasih).
+- 2026-10-10: tembus 192.168.18.6 (DONCUL-HOME, hEX/RB750Gr3, ROS 6.49.11) via API (user netmon) DAN SNMP v2c (community `netmon`, khusus 192.168.18.0/24, di-setup via API). Fallback API->SNMP verified.

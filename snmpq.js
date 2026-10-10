@@ -35,13 +35,29 @@ function walk(ip, community, base) {
     s.table(base, maxRep, cb);
   });
 }
+function subtree(ip, community, base) {
+  return new Promise((res, rej) => {
+    const s = session(ip, community);
+    const out = [];
+    const t = setTimeout(() => { try { s.close(); } catch {} rej(new Error('snmp walk timeout ' + base)); }, 12000);
+    s.subtree(base, 20, vb => {
+      vb.forEach(v => { if (snmp.isVarbindError(v)) return; out.push({ oid: v.oid, value: String(v.value) }); });
+    }, e => { clearTimeout(t); try { s.close(); } catch {} e ? rej(e) : res(out); });
+  });
+}
 async function ifaces(ip, community) {
-  const rows = await walk(ip, community, OIDS.ifTable);
+  const cols = { descr: '2', admin: '7', oper: '8', inOct: '10', outOct: '16' };
   const byIdx = {};
-  for (const r of rows) { (byIdx[r.idx] = byIdx[r.idx] || {})[r.col] = r.value; }
+  for (const [k, col] of Object.entries(cols)) {
+    const rows = await subtree(ip, community, OIDS.ifTable + '.' + col);
+    for (const r of rows) {
+      const idx = r.oid.split('.').pop();
+      (byIdx[idx] = byIdx[idx] || {})[k] = r.value;
+    }
+  }
   return Object.entries(byIdx).map(([idx, c]) => ({
-    idx: Number(idx), descr: c['2'] || '', admin: c['7'] === '1' ? 'up' : 'down',
-    oper: c['8'] === '1' ? 'up' : 'down', inOct: Number(c['10'] || 0), outOct: Number(c['16'] || 0),
+    idx: Number(idx), descr: c.descr || '', admin: c.admin === '1' ? 'up' : 'down',
+    oper: c.oper === '1' ? 'up' : 'down', inOct: Number(c.inOct || 0), outOct: Number(c.outOct || 0),
   }));
 }
-module.exports = { OIDS, get, walk, ifaces };
+module.exports = { OIDS, get, walk, subtree, ifaces };
