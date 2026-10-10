@@ -9,6 +9,7 @@ const http = require('http');
 const { URL } = require('url');
 const { rosQuery } = require('./ros');
 const snmpq = require('./snmpq');
+const { aiAsk, buildMessages } = require('./ai');
 
 function loadEnv() {
   try {
@@ -87,6 +88,19 @@ const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x');
     const q = Object.fromEntries(u.searchParams);
     if (u.pathname === '/health') return send(res, 200, { ok: true, service: 'netmon-collector' });
+    if (u.pathname === '/api/ai-ask' && req.method === 'POST') {
+      const body = await new Promise((resolve, reject) => {
+        let b = ''; req.on('data', c => { b += c; if (b.length > 200000) req.destroy(); });
+        req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { reject(new Error('body bukan JSON')); } });
+        req.on('error', reject);
+      });
+      if (!body.message) throw new Error('param message wajib');
+      const baseURL = process.env.AI_BASE_URL || 'http://localhost:20128/v1';
+      const key = process.env.AI_KEY || '';
+      const model = process.env.AI_MODEL || 'nine-router/auto-failover';
+      const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, body.ctx || {}) });
+      return send(res, 200, { ok: true, model, reply });
+    }
     if (u.pathname === '/api/discover') return send(res, 200, await discover(q));
     if (u.pathname === '/api/traffic') return send(res, 200, await traffic(q));
     if (u.pathname === '/api/dhcp') {
