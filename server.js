@@ -98,6 +98,22 @@ const server = http.createServer(async (req, res) => {
       const c = await rosQuery(q.ip, q.user || D.user, q.pass || D.pass, '/ip/firewall/connection/print', { 'count-only': '' }, D.port);
       return send(res, 200, { ok: true, tracking: s[0] || {}, count: c });
     }
+    if (u.pathname === '/api/neighbors') {
+      if (!q.ip) throw new Error('param ip wajib');
+      const user = q.user || D.user, pass = q.pass || D.pass, community = q.community || D.community;
+      try {
+        const nb = await rosQuery(q.ip, user, pass, '/ip/neighbor/print', {}, D.port);
+        return send(res, 200, { ok: true, via: 'routeros-api', ip: q.ip, neighbors: nb.map(n => ({ mac: n['mac-address'] || '', ip: n.address || '', identity: n.identity || '', iface: n.interface || '', version: n.version || '' })) });
+      } catch (eApi) {
+        const rows = await snmpq.subtree(q.ip, community, '1.3.6.1.2.1.4.22.1.2');
+        const ifs = await snmpq.ifaces(q.ip, community);
+        const descr = idx => (ifs.find(i => i.idx === Number(idx)) || {}).descr || ('if' + idx);
+        return send(res, 200, { ok: true, via: 'snmp-arp', ip: q.ip, apiError: String(eApi.message || eApi), neighbors: rows.map(r => {
+          const parts = r.oid.split('.').slice(-5); const mac = r.value.split(':').map(h => h.padStart(2, '0')).join(':').toUpperCase();
+          return { mac, ip: parts.slice(1).join('.'), identity: '', iface: descr(parts[0]), version: '' };
+        }) });
+      }
+    }
     if (u.pathname === '/api/ping') {
       if (!q.ip) throw new Error('param ip wajib');
       const { execFile } = require('child_process');
