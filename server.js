@@ -78,6 +78,16 @@ async function rosExport(host, user, pass, port) {
   } finally { api.close(); }
 }
 
+// allowlist perintah tulis yang boleh diusulkan AI (path RouterOS API). Di luar ini ditolak.
+const ROS_ALLOW = [/^\/interface\//, /^\/ip\/address\//, /^\/ip\/dns\//, /^\/ip\/route\//, /^\/ip\/firewall\/filter\//, /^\/ip\/dhcp-server\//, /^\/system\/identity\//, /^\/system\/note\//];
+const ROS_DENY = /\/user|\/reset|\/reboot|\/export|\/file|\/tool|\/password|\/certificate/i;
+function vetRosCmd(path, args) {
+  if (!path || typeof path !== 'string') return 'path kosong';
+  if (ROS_DENY.test(path)) return 'path diblokir: ' + path;
+  if (!ROS_ALLOW.some(r => r.test(path))) return 'path di luar allowlist: ' + path;
+  if (args && Object.keys(args).some(k => /remove|\.id$|^numbers$/i.test(k) && /\*/.test(String(args[k])))) return 'wildcard ditolak';
+  return null;
+}
 // tiket approve untuk aksi tulis (dongkrak 5 menit)
 const PENDING = new Map();
 function mkTicket(op) {
@@ -130,6 +140,34 @@ async function traffic(q) {
     const tx = (Number(b['tx-byte'] || 0) - Number(a['tx-byte'] || 0)) * 8;
     return { ok: true, ip, iface, src: 'counter', rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
   }
+}
+
+// snapshot live router buat konteks AI: semua interface (status + rate), resource, dan identitas
+async function snapshot(ip, user, pass) {
+  const u = user || D.user, p = pass || D.pass;
+  const [ifs1, res1, id] = await Promise.all([
+    rosQuery(ip, u, p, '/interface/print', { '.proplist': 'name,type,disabled,running,rx-byte,tx-byte,comment' }, D.port),
+    rosQuery(ip, u, p, '/system/resource/print', {}, D.port).catch(() => []),
+    rosQuery(ip, u, p, '/system/identity/print', {}, D.port).catch(() => []),
+  ]);
+  await sleep(1000);
+  const ifs2 = await rosQuery(ip, u, p, '/interface/print', { '.proplist': 'name,rx-byte,tx-byte' }, D.port);
+  const b = Object.fromEntries(ifs2.map(i => [i.name, i]));
+  const interfaces = ifs1.map(i => {
+    const n = b[i.name] || {};
+    const rx = (Number(n['rx-byte'] || 0) - Number(i['rx-byte'] || 0)) * 8;
+    const tx = (Number(n['tx-byte'] || 0) - Number(i['tx-byte'] || 0)) * 8;
+    return { n: i.name, type: i.type, admin: i.disabled === 'true' ? 'down' : 'up', oper: i.running === 'true' ? 'up' : 'down', comment: i.comment || '', dlMbps: +(rx / 1e6).toFixed(2), ulMbps: +(tx / 1e6).toFixed(2) };
+  });
+  const r = res1[0] || {};
+  return {
+    ip, identity: (id[0] || {}).name || '',
+    board: r['board-name'] || '', version: r.version || '', uptime: r.uptime || '',
+    cpuPct: r['cpu-load'] != null ? Number(r['cpu-load']) : null,
+    memFreeMb: r['free-memory'] ? +(Number(r['free-memory']) / 1048576).toFixed(1) : null,
+    memTotalMb: r['total-memory'] ? +(Number(r['total-memory']) / 1048576).toFixed(1) : null,
+    interfaces,
+  };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -192,8 +230,32 @@ const server = http.createServer(async (req, res) => {
       const baseURL = (body.aiBase && String(body.aiBase).trim()) || process.env.AI_BASE_URL || 'http://localhost:20128/v1';
       const key = (body.aiKey && String(body.aiKey).trim()) || process.env.AI_KEY || '';
       const model = (body.aiModel && String(body.aiModel).trim()) || process.env.AI_MODEL || 'nine-router/auto-failover';
-      const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, body.ctx || {}) });
-      return send(res, 200, { ok: true, model, reply });
+      // snapshot live device terbuka (kalau ada) → AI dapat data nyata, bukan cuma tampilan
+      let snap = null;
+      const lv = (body.ctx || {}).live;
+      if (lv && lv.ip) {
+        try { snap = await snapshot(lv.ip, q.user, q.pass); } catch (e) { snap = { error: String(e.message || e).slice(0, 120) }; }
+      }
+      const ctxAll = { ...(body.ctx || {}), snapshot: snap };
+      const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, ctxAll) });
+      // AI boleh mengusulkan perubahan lewat blok ```ros-cmd {json}```. Itu hanya jadi tiket, TIDAK dieksekusi.
+      const proposals = [];
+      const reCmd = /```ros-cmd\s*([\s\S]*?)```/g; let mm;
+      while ((mm = reCmd.exec(reply)) !== null) {
+        try {
+          const p = JSON.parse(mm[1].trim());
+          const bad = vetRosCmd(p.path, p.args);
+          if (bad) { proposals.push({ rejected: bad }); continue; }
+          if (!snap || !snap.ip) { proposals.push({ rejected: 'tidak ada device terbuka sebagai target' }); continue; }
+          const label = p.label || (p.path + ' ' + JSON.stringify(p.args || {}));
+          const ticket = mkTicket({ kind: 'ros-cmd', ip: snap.ip, path: p.path, args: p.args || {}, label });
+          proposals.push({ ticket, label: '✅ Setujui: ' + label });
+        } catch (e) { proposals.push({ rejected: 'format usulan salah' }); }
+      }
+      const cleanReply = reply.replace(/```ros-cmd[\s\S]*?```/g, '').trim();
+      const rejected = proposals.filter(p => p.rejected).map(p => '⛔ ditolak: ' + p.rejected);
+      const actions = proposals.filter(p => p.ticket).map(p => ({ ticket: p.ticket, label: p.label }));
+      return send(res, 200, { ok: true, model, reply: cleanReply + (rejected.length ? '\n\n' + rejected.join('\n') : ''), actions: actions.length ? actions : undefined });
     }
     if (u.pathname === '/api/iface-enable') {
       const ip = q.ip, iface = q.iface, user = q.user || process.env.W_USER || '', pass = q.pass || process.env.W_PASS || '';
@@ -215,6 +277,14 @@ const server = http.createServer(async (req, res) => {
       if (!WU || !WP) throw new Error('W_USER/W_PASS belum diisi');
       if (op.kind === 'iface-disable') await rosQuery(op.ip, WU, WP, '/interface/set', { numbers: op.iface, disabled: 'yes' }, D.port);
       else if (op.kind === 'iface-enable') await rosQuery(op.ip, WU, WP, '/interface/set', { numbers: op.iface, disabled: 'no' }, D.port);
+      else if (op.kind === 'ros-cmd') {
+        // backup sebelum perubahan, lalu jalankan perintah yang sudah lolos allowlist
+        const before = await rosExport(op.ip, WU, WP, D.port);
+        const fs = require('fs'); try { fs.mkdirSync(__dirname + '/backups'); } catch {}
+        fs.writeFileSync(__dirname + '/backups/pre-change-' + op.ip.replace(/\./g, '-') + '-' + Date.now() + '.rsc', before);
+        const out = await rosQuery(op.ip, WU, WP, op.path, op.args || {}, D.port);
+        return send(res, 200, { ok: true, reply: `✅ ${op.label} di ${op.ip} sudah dijalankan. Backup sebelum perubahan tersimpan di collector/backups/.`, out });
+      }
       else throw new Error('aksi tidak dikenal');
       return send(res, 200, { ok: true, reply: `✅ ${op.iface} di ${op.ip} udah di-${op.kind === 'iface-disable' ? 'DISABLE' : 'ENABLE'}. Tercatat di log.` });
     }

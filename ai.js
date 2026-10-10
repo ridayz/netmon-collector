@@ -22,9 +22,14 @@ async function aiAsk({ baseURL, key, model, messages, timeoutMs = 90000 }) {
 
 const AI_SYSTEM = `Kamu teknisi NOC bernama NetMon AI. Gaya santai sopan bahasa Indonesia (kayak ngobrol sama temen), tapi teknis dan akurat.
 Aturan:
-- Fokus HANYA ke device yang sedang terbuka dan interface-nya (ada di konteks). Jangan membahas device/topologi lain yang tidak dikirim. Jangan melebar.
-- Kamu hanya BISA membaca: interface, status up/down, traffic, alarm, riwayat downtime device ini yang dikirim sebagai konteks. Jangan ngarang angka yang tidak ada di konteks.
-- Kamu TIDAK BISA mengubah config apa pun — kalau perlu tindakan, tulis SARAN + langkahnya, jangan klaim sudah dikerjakan.
+- Fokus ke device yang sedang terbuka (ada di konteks). Pakai DATA LIVE ROUTER untuk cek status, traffic, CPU, RAM, dan error. Jangan ngarang angka yang tidak ada di konteks.
+- Kamu bisa menganalisis semua interface dan konfigurasi yang dikirim. Kalau user minta konfigurasi, tulis langkah RouterOS yang tepat (command lengkap) dan jelaskan dampaknya.
+- Kamu TIDAK mengeksekusi perubahan sendiri. Kalau user minta ubah config, usulkan dengan blok persis begini (satu blok per perubahan):
+\`\`\`ros-cmd
+{"label":"ringkasan singkat","path":"/ip/dns/","args":{"servers":"8.8.8.8,1.1.1.1"}}
+\`\`\`
+  Path yang boleh: /interface/, /ip/address/, /ip/dns/, /ip/route/, /ip/firewall/filter/, /ip/dhcp-server/, /system/identity/, /system/note/. Args sesuai API RouterOS (contoh untuk set: pakai "args" dengan kunci atribut, misal "disabled":"no" atau "numbers":"ether3"). Usulan hanya jadi tiket, user harus setujui dulu. Jangan klaim sudah dikerjakan.
+- Jelaskan dampak perubahan sebelum mengusulkannya, terutama yang bisa memutus koneksi.
 - Jawab singkat dan to-the-point. Format: vonis dulu (1-2 baris), lalu bukti (poin-poin dari data), lalu saran. Tanpa basa-basi pembuka.`;
 
 function buildMessages(message, ctx) {
@@ -34,7 +39,16 @@ function buildMessages(message, ctx) {
   const lv = c.live ? `LIVE dari ${c.live.identity || '?'} (${c.live.ip}):\n` + (c.live.ifaces || []).map(i => `- ${i.n} admin:${i.admin} oper:${i.oper}${i.dl != null ? ' DL:' + i.dl : ''}${i.ul != null ? ' UL:' + i.ul : ''}`).join('\n') : 'LIVE: tidak ada (device belum dihubungkan)';
   const alarms = (c.alarms || []).map(a => `[${a.t}] ${a.sev} ${a.dev}: ${a.msg}`).join('\n');
   const down = (c.downtime || []).map(d => `${d.dev}: DOWN ${d.downStr} → ${d.upStr || 'masih DOWN'} (total ${d.totalMs ? Math.round(d.totalMs / 1000) + 's' : '?'})`).join('\n');
-  const context = `KONTEKS DEVICE TERBUKA (fokus, jangan bahas device lain):\nDevice: ${dev}\n\nInterface:\n${ifs || '(kosong)'}\n\n${lv}\n\nAlarm device ini:\n${alarms || '(tidak ada)'}\n\nRiwayat downtime device ini:\n${down || '(tidak ada)'}`;
+  const s = c.snapshot;
+  let snapTxt = '(belum ada snapshot live)';
+  if (s && s.error) snapTxt = 'Snapshot gagal: ' + s.error;
+  else if (s) {
+    snapTxt = `Router ${s.identity || '?'} (${s.ip}) ${s.board} RouterOS ${s.version} uptime ${s.uptime}` +
+      `\nCPU ${s.cpuPct ?? '?'}% | RAM bebas ${s.memFreeMb ?? '?'}MB dari ${s.memTotalMb ?? '?'}MB` +
+      `\nSemua interface (live, DL/UL Mbps):\n` +
+      (s.interfaces || []).map(i => `- ${i.n} [${i.type}] admin:${i.admin} oper:${i.oper}${i.comment ? ' ("' + i.comment + '")' : ''} DL:${i.dlMbps} UL:${i.ulMbps}`).join('\n');
+  }
+  const context = `DEVICE YANG LAGI DIBUKA: ${dev}\n\nDATA LIVE ROUTER (snapshot sekarang):\n${snapTxt}\n\nStatus dari dashboard:\n${ifs || '(kosong)'}\n\n${lv}\n\nAlarm device ini:\n${alarms || '(tidak ada)'}\n\nRiwayat downtime device ini:\n${down || '(tidak ada)'}`;
   return [
     { role: 'system', content: AI_SYSTEM },
     { role: 'user', content: context + '\n\nPERTANYAAN USER:\n' + message },
