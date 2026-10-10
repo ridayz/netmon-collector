@@ -66,8 +66,10 @@ async function rosExport(host, user, pass, port) {
   try {
     await api.talk(['/login', `=name=${user}`, `=password=${pass}`]);
     const sents = await api.rawSentences(['/export', '=compact']);
+    await sleep(1500); // beri waktu reply export terakhir
+    let s2 = await api.rawSentences([]);
     const lines = [];
-    for (const s of sents) for (const w of s) {
+    for (const s of [...sents, ...s2]) for (const w of s) {
       if (w === '!re' || w === '!done' || w === '!trap' || w === '!fatal' || w.startsWith('=ret=')) continue;
       lines.push(w.startsWith('=') ? w.slice(1) : w);
     }
@@ -197,6 +199,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === '/api/discover') return send(res, 200, await discover(q));
     if (u.pathname === '/api/traffic') return send(res, 200, await traffic(q));
+    if (u.pathname === '/api/status') {
+      const ip = q.ip, user = q.user || D.user, pass = q.pass || D.pass;
+      if (!ip) throw new Error('param ip wajib');
+      const ifs = await rosQuery(ip, user, pass, '/interface/print', { '.proplist': 'name,disabled,running,type' }, D.port);
+      return send(res, 200, { ok: true, ip, via: 'routeros-api', ifaces: ifs.map(i => ({ name: i.name, admin: i.disabled === 'true' ? 'down' : 'up', oper: i.running === 'true' ? 'up' : 'down', type: i.type })) });
+    }
     if (u.pathname === '/api/dhcp') {
       const pools = await rosQuery(q.ip, q.user || D.user, q.pass || D.pass, '/ip/pool/print', {}, D.port);
       return send(res, 200, { ok: true, pools });
