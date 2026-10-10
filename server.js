@@ -166,9 +166,9 @@ const server = http.createServer(async (req, res) => {
         const ticket = mkTicket(op);
         return send(res, 200, { ok: true, mode: 'intent', reply: `Mau DISABLE ${op.iface} di ${t.ip} — ini mutus koneksi loh. Yakin?`, actions: [{ ticket, label: `✅ Ya, disable ${op.iface}` }] });
       }
-      const baseURL = process.env.AI_BASE_URL || 'http://localhost:20128/v1';
-      const key = process.env.AI_KEY || '';
-      const model = process.env.AI_MODEL || 'nine-router/auto-failover';
+      const baseURL = (body.aiBase && String(body.aiBase).trim()) || process.env.AI_BASE_URL || 'http://localhost:20128/v1';
+      const key = (body.aiKey && String(body.aiKey).trim()) || process.env.AI_KEY || '';
+      const model = (body.aiModel && String(body.aiModel).trim()) || process.env.AI_MODEL || 'nine-router/auto-failover';
       const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, body.ctx || {}) });
       return send(res, 200, { ok: true, model, reply });
     }
