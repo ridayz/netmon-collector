@@ -99,6 +99,13 @@ function resolveTarget(message, ctx) {
     const L = (ctx.liveMap || {})[k];
     if (L && L.identity && message.toLowerCase().includes(String(L.identity).toLowerCase())) return { ip: L.ip, how: 'nama-device' };
   }
+  const lv = (ctx || {}).live || null;
+  if (lv && lv.ip) {
+    const idn = String(lv.identity || '').toLowerCase();
+    const low = message.toLowerCase();
+    const devName = String(sel || '').split('/')[0].toLowerCase();
+    if (!low || low.includes('ini') || low.includes('router') || (idn && low.includes(idn)) || (devName && low.includes(devName))) return { ip: lv.ip, how: 'device-terbuka' };
+  }
   return null;
 }
 async function traffic(q) {
