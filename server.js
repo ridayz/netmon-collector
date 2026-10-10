@@ -61,18 +61,25 @@ async function discover(q) {
 async function traffic(q) {
   const ip = q.ip, user = q.user || D.user, pass = q.pass || D.pass, iface = q.iface;
   if (!ip || !iface) throw new Error('param ip & iface wajib');
-  const once = async () => {
-    const all = await rosQuery(ip, user, pass, '/interface/print', { '.proplist': 'name,rx-byte,tx-byte' }, D.port);
-    const f = all.find(i => i.name === iface);
-    if (!f) throw new Error('interface tidak ketemu: ' + iface);
-    return f;
-  };
-  const a = (await once())[0] || {};
-  await sleep(1000);
-  const b = (await once())[0] || {};
-  const rx = (Number(b['rx-byte'] || 0) - Number(a['rx-byte'] || 0)) * 8;
-  const tx = (Number(b['tx-byte'] || 0) - Number(a['tx-byte'] || 0)) * 8;
-  return { ok: true, ip, iface, rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
+  try {
+    const r = await rosQuery(ip, user, pass, '/interface/monitor-traffic', { interface: iface, once: '' }, D.port);
+    const a = r[0] || {};
+    const rx = Number(a['rx-bits-per-second'] || 0), tx = Number(a['tx-bits-per-second'] || 0);
+    return { ok: true, ip, iface, src: 'monitor', rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
+  } catch (eMon) {
+    const once = async () => {
+      const all = await rosQuery(ip, user, pass, '/interface/print', { '.proplist': 'name,rx-byte,tx-byte' }, D.port);
+      const f = all.find(i => i.name === iface);
+      if (!f) throw new Error('interface tidak ketemu: ' + iface);
+      return f;
+    };
+    const a = await once();
+    await sleep(1000);
+    const b = await once();
+    const rx = (Number(b['rx-byte'] || 0) - Number(a['rx-byte'] || 0)) * 8;
+    const tx = (Number(b['tx-byte'] || 0) - Number(a['tx-byte'] || 0)) * 8;
+    return { ok: true, ip, iface, src: 'counter', rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
+  }
 }
 
 const server = http.createServer(async (req, res) => {
