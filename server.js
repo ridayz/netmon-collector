@@ -129,6 +129,20 @@ const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x');
     const q = Object.fromEntries(u.searchParams);
     if (u.pathname === '/health') return send(res, 200, { ok: true, service: 'netmon-collector' });
+    if (u.pathname === '/api/ai-test' && req.method === 'POST') {
+      const body = await new Promise((resolve, reject) => {
+        let b = ''; req.on('data', c => { b += c; });
+        req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { reject(new Error('body bukan JSON')); } });
+        req.on('error', reject);
+      });
+      const key = (body.aiKey && String(body.aiKey).trim()) || process.env.AI_KEY || '';
+      const baseURL = (body.aiBase && String(body.aiBase).trim()) || process.env.AI_BASE_URL || 'http://localhost:20128/v1';
+      const model = (body.aiModel && String(body.aiModel).trim()) || process.env.AI_MODEL || 'nine-router/auto-failover';
+      try {
+        const reply = await aiAsk({ baseURL, key, model, messages: [{ role: 'user', content: 'balas: ok' }], timeoutMs: 30000 });
+        return send(res, 200, { ok: true, model, reply: String(reply).slice(0, 80) });
+      } catch (e) { return send(res, 200, { ok: false, error: String(e.message || e).slice(0, 120) }); }
+    }
     if (u.pathname === '/api/ai-ask' && req.method === 'POST') {
       const body = await new Promise((resolve, reject) => {
         let b = ''; req.on('data', c => { b += c; if (b.length > 200000) req.destroy(); });
