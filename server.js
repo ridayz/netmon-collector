@@ -91,6 +91,16 @@ const server = http.createServer(async (req, res) => {
       const c = await rosQuery(q.ip, q.user || D.user, q.pass || D.pass, '/ip/firewall/connection/print', { 'count-only': '' }, D.port);
       return send(res, 200, { ok: true, tracking: s[0] || {}, count: c });
     }
+    if (u.pathname === '/api/ping') {
+      if (!q.ip) throw new Error('param ip wajib');
+      const { execFile } = require('child_process');
+      const win = process.platform === 'win32';
+      const args = win ? ['-n', '1', '-w', '2000', q.ip] : ['-c', '1', '-W', '2', q.ip];
+      const out = await new Promise(resolve => execFile('ping', args, { timeout: 6000 }, (e, stdout) => resolve({ e, stdout: String(stdout || '') })));
+      const m = out.stdout.match(/time[=<](\d+)\s*ms/i);
+      const ok = /TTL=|ttl=|bytes (from|von)/i.test(out.stdout);
+      return send(res, 200, { ok, ip: q.ip, ms: m ? Number(m[1]) : null, raw: out.stdout.split('\n').slice(-3).join(' ').slice(0, 120) });
+    }
     return send(res, 404, { ok: false, error: 'unknown endpoint' });
   } catch (e) { send(res, 500, { ok: false, error: String(e.message || e) }); }
 });
