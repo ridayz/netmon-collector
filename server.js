@@ -46,15 +46,24 @@ async function discover(q) {
       interfaces: ifs.map(i => ({ name: i.name, type: i.type, admin: i.disabled === 'true' ? 'down' : 'up', oper: i.running === 'true' ? 'up' : 'down', mac: i['mac-address'] || '' })),
     };
   } catch (eApi) {
-    // 2) fallback SNMP
-    const [sys, ifs] = await Promise.all([
-      snmpq.get(ip, community, [snmpq.OIDS.sysDescr, snmpq.OIDS.sysName, snmpq.OIDS.sysUpTime]),
-      snmpq.ifaces(ip, community),
-    ]);
+    // 2) fallback SNMP (coba community yang dikasih + umum)
+    const comms = [community, 'public', 'private'].filter((v, i, a) => v && a.indexOf(v) === i);
+    let sys = null, ifs = null, usedCm = '';
+    let lastErr = null;
+    for (const cm of comms) {
+      try {
+        const [s, f] = await Promise.all([
+          snmpq.get(ip, cm, [snmpq.OIDS.sysDescr, snmpq.OIDS.sysName, snmpq.OIDS.sysUpTime]),
+          snmpq.ifaces(ip, cm),
+        ]);
+        sys = s; ifs = f; usedCm = cm; break;
+      } catch (e) { lastErr = e; }
+    }
+    if (!sys) throw new Error('SNMP gagal semua community (' + comms.join('/') + '): ' + String((lastErr && lastErr.message) || eApi.message || eApi).slice(0, 80));
     const g = oid => (sys.find(v => v.oid === oid) || {}).value || '';
     return {
       ok: true, via: 'snmp', ip, apiError: String(eApi.message || eApi),
-      sysDescr: g(snmpq.OIDS.sysDescr), sysName: g(snmpq.OIDS.sysName), uptime: g(snmpq.OIDS.sysUpTime),
+      sysDescr: g(snmpq.OIDS.sysDescr), sysName: g(snmpq.OIDS.sysName), uptime: g(snmpq.OIDS.sysUpTime), snmpCommunity: usedCm,
       interfaces: ifs.map(i => ({ name: i.descr || ('if' + i.idx), admin: i.admin, oper: i.oper })),
     };
   }
