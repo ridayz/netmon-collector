@@ -386,13 +386,23 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
       const { execFile } = require('child_process');
       const run = (args) => new Promise(resolve => execFile('node', ['bin/archify.mjs', ...args], { cwd: ARCHIFY, timeout: 120000 }, (e, stdout, stderr) => resolve({ code: e ? (e.code || 1) : 0, out: String(stdout || ''), err: String(stderr || '').slice(0, 500) })));
-      const v = await run(['validate', 'architecture', candPath, '--quality', 'showcase', '--json']);
+      let profile = 'showcase';
+      let v = await run(['validate', 'architecture', candPath, '--quality', 'showcase', '--json']);
       let validation = v.out.slice(0, 2000);
       try { validation = JSON.parse(v.out); } catch {}
+      if (v.code !== 0) {
+        // mesh padat gagal komposisi showcase → coba profil standard (dense map), tetap jujur di respons
+        candidate.meta.quality_profile = 'standard';
+        fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
+        v = await run(['validate', 'architecture', candPath, '--quality', 'standard', '--json']);
+        validation = v.out.slice(0, 2000);
+        try { validation = JSON.parse(v.out); } catch {}
+        if (v.code === 0) profile = 'standard';
+      }
       if (v.code !== 0) return send(res, 200, { ok: false, error: 'validasi gagal', validation, log: v.err });
-      const d = await run(['deliver', 'architecture', candPath, htmlPath, '--quality', 'showcase', '--json']);
+      const d = await run(['deliver', 'architecture', candPath, htmlPath, '--quality', profile, '--json']);
       if (d.code !== 0) return send(res, 200, { ok: false, error: 'deliver gagal', log: (d.out + d.err).slice(0, 2000) });
-      return send(res, 200, { ok: true, file: base + '.html', url: '/api/archify-file?name=' + base + '.html', validation });
+      return send(res, 200, { ok: true, profile, file: base + '.html', url: '/api/archify-file?name=' + base + '.html', validation });
     }
     if (u.pathname === '/api/backup-file') {
       const name = String(q.name || '').replace(/[^a-zA-Z0-9\-.]/g, '');
