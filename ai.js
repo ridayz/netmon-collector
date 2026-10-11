@@ -1,5 +1,5 @@
 // ai.js — panggil model AI apa pun yang ngomong OpenAI-chat (/chat/completions).
-async function aiAsk({ baseURL, key, model, messages, timeoutMs = 90000 }) {
+async function aiAsk({ baseURL, key, model, messages, timeoutMs = 45000 }) {
   const ctl = new AbortController();
   const to = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -17,6 +17,9 @@ async function aiAsk({ baseURL, key, model, messages, timeoutMs = 90000 }) {
     const c = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
     if (!c) throw new Error('AI balas kosong');
     return c;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('AI timeout (>' + Math.round(timeoutMs / 1000) + 's) — provider lambat atau model overload, coba lagi');
+    throw e;
   } finally { clearTimeout(to); }
 }
 

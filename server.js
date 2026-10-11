@@ -62,7 +62,7 @@ async function discover(q) {
 
 async function rosExport(host, user, pass, port) {
   const fs = require('fs');
-  const api = new RosApi(host, port);
+  const api = new RosApi(host, port, 30000); // /export bisa lama, jangan pakai timeout default 5 dtk
   await api.connect();
   try {
     await api.talk(['/login', `=name=${user}`, `=password=${pass}`]);
@@ -111,7 +111,9 @@ function resolveTarget(message, ctx) {
     const idn = String(lv.identity || '').toLowerCase();
     const low = message.toLowerCase();
     const devName = String(sel || '').split('/')[0].toLowerCase();
-    if (!low || low.includes('ini') || low.includes('router') || (idn && low.includes(idn)) || (devName && low.includes(devName))) return { ip: lv.ip, how: 'device-terbuka' };
+    // device yang lagi dibuka = default target kalau user tidak sebut IP/device lain
+    const otherIp = (ctx || {}).liveMap && Object.values(ctx.liveMap).some(L => L && L.identity && low.includes(String(L.identity).toLowerCase()) && L.ip !== lv.ip);
+    if (!otherIp) return { ip: lv.ip, how: 'device-terbuka' };
   }
   return null;
 }
@@ -301,6 +303,21 @@ const server = http.createServer(async (req, res) => {
       if (!ip) throw new Error('param ip wajib');
       const ifs = await rosQuery(ip, user, pass, '/interface/print', { '.proplist': 'name,disabled,running,type' }, D.port);
       return send(res, 200, { ok: true, ip, via: 'routeros-api', ifaces: ifs.map(i => ({ name: i.name, admin: i.disabled === 'true' ? 'down' : 'up', oper: i.running === 'true' ? 'up' : 'down', type: i.type })) });
+    }
+    if (u.pathname === '/api/gns3') {
+      // proxy ke GNS3 server (browser kena CORS kalau langsung). path wajib /v2/...
+      const server = String(q.server || 'http://localhost:3080').replace(/\/$/, '');
+      const p = String(q.path || '/v2/projects');
+      if (!p.startsWith('/v2/') || p.includes('..')) throw new Error('path GNS3 tidak valid');
+      const headers = {};
+      if (q.user) headers.Authorization = 'Basic ' + Buffer.from(String(q.user) + ':' + String(q.pass || '')).toString('base64');
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 25000);
+      try {
+        const r = await fetch(server + p, { headers, signal: ctl.signal });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((j.message || j.error) ? String(j.message || j.error).slice(0, 120) : 'GNS3 error ' + r.status);
+        return send(res, 200, { ok: true, data: j });
+      } finally { clearTimeout(to); }
     }
     if (u.pathname === '/api/dhcp') {
       const pools = await rosQuery(q.ip, q.user || D.user, q.pass || D.pass, '/ip/pool/print', {}, D.port);
