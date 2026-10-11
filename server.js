@@ -442,6 +442,27 @@ const server = http.createServer(async (req, res) => {
         const batch = await Promise.all(ips.slice(i, i + 64).map(pingOne));
         batch.forEach(x => { if (x) alive.push(x); });
       }
+      // ala Advanced IP Scanner: baca tabel ARP (nangkep host yang ping-nya diblokir) + MAC
+      const arpMac = {};
+      try {
+        const arpOut = await new Promise(resolve => execFile(process.platform === 'win32' ? 'arp' : 'arp', process.platform === 'win32' ? ['-a'] : ['-an'], { timeout: 8000 }, (e, stdout) => resolve(String(stdout || ''))));
+        const re = new RegExp(m[1] + '\\.' + m[2] + '\\.' + m[3] + '\\.(\\d+)\\s+([0-9a-fA-F:-]{11,17})', 'g');
+        let am;
+        while ((am = re.exec(arpOut)) !== null) {
+          const ip = base + am[1];
+          if (!own.has(ip) && am[1] !== '0' && am[1] !== '255') arpMac[ip] = am[2].replace(/-/g, ':').toUpperCase();
+        }
+      } catch {}
+      const allIps = [...new Set([...alive, ...Object.keys(arpMac)])];
+      const revDns = async ip => {
+        try {
+          const names = await Promise.race([
+            require('dns').promises.reverse(ip),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('t/o')), 1500)),
+          ]);
+          return (names && names[0]) || '';
+        } catch { return ''; }
+      };
       const probe = (ip, port) => new Promise(resolve => {
         let done = false; const fin = v => { if (!done) { done = true; try { s.destroy(); } catch {} resolve(v); } };
         const s = require('net').connect(port, ip);
@@ -453,19 +474,20 @@ const server = http.createServer(async (req, res) => {
       let comms = String(q.communities || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 8);
       comms = [...comms, 'public', 'private', 'netmon'].filter((v, i, a) => a.indexOf(v) === i);
       const snmpProbe = async ip => {
-        for (const cm of comms) {
-          try {
-            const sys = await snmpq.get(ip, cm, [snmpq.OIDS.sysDescr, snmpq.OIDS.sysName]);
-            const gd = oid => (sys.find(v => v.oid === oid) || {}).value || '';
-            const descr = gd(snmpq.OIDS.sysDescr);
-            if (descr) return { community: cm, sysDescr: descr.slice(0, 120), sysName: gd(snmpq.OIDS.sysName).slice(0, 64) };
-          } catch {}
-        }
-        return null;
+        const tr = cm => snmpq.get(ip, cm, [snmpq.OIDS.sysDescr, snmpq.OIDS.sysName], 1200, 0).then(sys => {
+          const gd = oid => (sys.find(v => v.oid === oid) || {}).value || '';
+          const descr = gd(snmpq.OIDS.sysDescr);
+          return descr ? { community: cm, sysDescr: descr.slice(0, 120), sysName: gd(snmpq.OIDS.sysName).slice(0, 64) } : null;
+        }).catch(() => null);
+        const rs = await Promise.all(comms.map(tr));
+        return rs.find(Boolean) || null;
       };
-      for (const ip of alive) {
-        const [api, winbox, ssh, http, snmp] = await Promise.all([probe(ip, 8728), probe(ip, 8291), probe(ip, 22), probe(ip, 80), snmpProbe(ip)]);
-        hosts.push({ ip, ports: [api && '8728-API', winbox && '8291-Winbox', ssh && '22-SSH', http && '80-HTTP'].filter(Boolean), snmp });
+      const work = async ip => {
+        const [api, winbox, ssh, http, snmp, name] = await Promise.all([probe(ip, 8728), probe(ip, 8291), probe(ip, 22), probe(ip, 80), snmpProbe(ip), revDns(ip)]);
+        return { ip, mac: arpMac[ip] || '', name, ping: alive.includes(ip), ports: [api && '8728-API', winbox && '8291-Winbox', ssh && '22-SSH', http && '80-HTTP'].filter(Boolean), snmp };
+      };
+      for (let i = 0; i < allIps.length; i += 16) {
+        hosts.push(...await Promise.all(allIps.slice(i, i + 16).map(work)));
       }
       return send(res, 200, { ok: true, net, count: hosts.length, hosts });
     }

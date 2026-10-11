@@ -9,12 +9,12 @@ const OIDS = {
   ifTable: '1.3.6.1.2.1.2.2.1', // .2=descr .7=admin .8=oper .10=inOct .16=outOct .13=discards...
 };
 
-function session(ip, community, timeout = 3000) {
-  return snmp.createSession(ip, community, { timeout, retries: 1, version: snmp.Version2c });
+function session(ip, community, timeout = 3000, retries = 1) {
+  return snmp.createSession(ip, community, { timeout, retries, version: snmp.Version2c });
 }
-function get(ip, community, oids) {
+function get(ip, community, oids, timeout, retries) {
   return new Promise((res, rej) => {
-    const s = session(ip, community);
+    const s = session(ip, community, timeout || 3000, retries === undefined ? 1 : retries);
     s.get(oids, (e, vb) => { s.close(); e ? rej(e) : res(vb.map(v => ({ oid: v.oid, type: snmp.ObjectType[v.type], value: String(v.value) }))); });
   });
 }
