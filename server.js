@@ -361,7 +361,7 @@ const server = http.createServer(async (req, res) => {
         for (let i = 0; i < components.length; i++) for (let j = i + 1; j < components.length; j++) {
           const A = components[i], B = components[j];
           const dx = (B.pos[0] + CW / 2) - (A.pos[0] + CW / 2), dy = (B.pos[1] + CH / 2) - (A.pos[1] + CH / 2);
-          const ox = (CW + 200) - Math.abs(dx), oy = (CH + 200) - Math.abs(dy);
+          const ox = (CW + 120) - Math.abs(dx), oy = (CH + 120) - Math.abs(dy);
           if (ox > 0 && oy > 0) {
             moved = true;
             if (ox < oy) { const s = dx === 0 ? 1 : Math.sign(dx), p = ox / 2 + 1; A.pos[0] = Math.round(A.pos[0] - s * p); B.pos[0] = Math.round(B.pos[0] + s * p); }
@@ -469,7 +469,7 @@ const server = http.createServer(async (req, res) => {
             const mx = (ev.from[0] + ev.to[0]) / 2, my = (ev.from[1] + ev.to[1]) / 2;
             let vx = (n.pos[0] + CW / 2) - mx, vy = (n.pos[1] + CH / 2) - my;
             const m = Math.hypot(vx, vy) || 1; vx /= m; vy /= m;
-            n.pos[0] = Math.round(n.pos[0] + vx * 150); n.pos[1] = Math.round(n.pos[1] + vy * 150);
+            n.pos[0] = Math.round(n.pos[0] + vx * 100); n.pos[1] = Math.round(n.pos[1] + vy * 100);
             tidy(80);
             continue;
           }
