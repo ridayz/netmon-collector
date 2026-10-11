@@ -118,14 +118,32 @@ function resolveTarget(message, ctx) {
   return null;
 }
 async function traffic(q) {
-  const ip = q.ip, user = q.user || D.user, pass = q.pass || D.pass, iface = q.iface;
+  const ip = q.ip, user = q.user || D.user, pass = q.pass || D.pass, iface = q.iface, community = q.community || D.community;
   if (!ip || !iface) throw new Error('param ip & iface wajib');
+  const snmpTraffic = async () => {
+    const once = async () => {
+      const all = await snmpq.ifaces(ip, community);
+      const f = all.find(i => i.descr === iface) || all.find(i => ('if' + i.idx) === iface);
+      if (!f) throw new Error('interface tidak ketemu (snmp): ' + iface);
+      return f;
+    };
+    const t0 = Date.now();
+    const a = await once();
+    await sleep(1200);
+    const b = await once();
+    const dt = Math.max(0.5, (Date.now() - t0) / 1000);
+    const diff = (x, y) => { let d = y - x; if (d < 0) d += 4294967296; return d; };
+    const rx = diff(a.inOct, b.inOct) * 8 / dt, tx = diff(a.outOct, b.outOct) * 8 / dt;
+    return { ok: true, ip, iface, src: 'snmp', rxBps: Math.round(rx), txBps: Math.round(tx), rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
+  };
+  if (q.via === 'snmp') return snmpTraffic();
   try {
     const r = await rosQuery(ip, user, pass, '/interface/monitor-traffic', { interface: iface, once: '' }, D.port);
     const a = r[0] || {};
     const rx = Number(a['rx-bits-per-second'] || 0), tx = Number(a['tx-bits-per-second'] || 0);
     return { ok: true, ip, iface, src: 'monitor', rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
   } catch (eMon) {
+    try {
     const once = async () => {
       const all = await rosQuery(ip, user, pass, '/interface/print', { '.proplist': 'name,rx-byte,tx-byte' }, D.port);
       const f = all.find(i => i.name === iface);
@@ -137,7 +155,12 @@ async function traffic(q) {
     const b = await once();
     const rx = (Number(b['rx-byte'] || 0) - Number(a['rx-byte'] || 0)) * 8;
     const tx = (Number(b['tx-byte'] || 0) - Number(a['tx-byte'] || 0)) * 8;
+    if (rx < 0 || tx < 0) throw new Error('counter aneh');
     return { ok: true, ip, iface, src: 'counter', rxBps: rx, txBps: tx, rxMbps: +(rx / 1e6).toFixed(2), txMbps: +(tx / 1e6).toFixed(2) };
+    } catch (e2) {
+      if (community) return snmpTraffic();
+      throw e2;
+    }
   }
 }
 
