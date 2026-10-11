@@ -352,6 +352,28 @@ const server = http.createServer(async (req, res) => {
       const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
       const sc = Math.min((VW - 2 * M - CW) / bw, (VH - 2 * M - CH) / bh);
       const components = comps.map(c => ({ id: c.id, type: c.type, label: c.label, sublabel: c.sublabel, tag: c.tag, pos: [Math.round(M + (c._x - minX) * sc), Math.round(M + (c._y - minY) * sc)], size: [CW, CH] }));
+      // de-collision: gap minimum 24px antar kotak (posisi dashboard manual suka numpuk)
+      for (let it = 0; it < 200; it++) {
+        let moved = false;
+        for (let i = 0; i < components.length; i++) for (let j = i + 1; j < components.length; j++) {
+          const A = components[i], B = components[j];
+          const dx = (B.pos[0] + CW / 2) - (A.pos[0] + CW / 2), dy = (B.pos[1] + CH / 2) - (A.pos[1] + CH / 2);
+          const ox = (CW + 24) - Math.abs(dx), oy = (CH + 24) - Math.abs(dy);
+          if (ox > 0 && oy > 0) {
+            moved = true;
+            if (ox < oy) { const s = dx === 0 ? 1 : Math.sign(dx), p = ox / 2 + 1; A.pos[0] = Math.round(A.pos[0] - s * p); B.pos[0] = Math.round(B.pos[0] + s * p); }
+            else { const s = dy === 0 ? 1 : Math.sign(dy), p = oy / 2 + 1; A.pos[1] = Math.round(A.pos[1] - s * p); B.pos[1] = Math.round(B.pos[1] + s * p); }
+          }
+        }
+        if (!moved) break;
+      }
+      // re-fit viewBox mengikuti hasil sebar
+      const rx = components.map(c => c.pos[0]), ry = components.map(c => c.pos[1]);
+      const rminX = Math.min(...rx), rminY = Math.min(...ry);
+      const rmaxX = Math.max(...rx), rmaxY = Math.max(...ry);
+      const MG = 60;
+      components.forEach(c => { c.pos[0] += MG - rminX; c.pos[1] += MG - rminY; });
+      var ARCH_VB = [Math.ceil(rmaxX - rminX + CW + MG * 2), Math.ceil(rmaxY - rminY + CH + MG * 2)];
       const centers = {};
       components.forEach(c => { centers[c.id] = [c.pos[0] + CW / 2, c.pos[1] + CH / 2]; });
       const conns = [];
@@ -373,7 +395,7 @@ const server = http.createServer(async (req, res) => {
       const fo = links.filter(l => l[2] === 'fo').length;
       const candidate = {
         schema_version: 1, diagram_type: 'architecture',
-        meta: { title: String(body.title || ('Topologi ' + layerLabel)).slice(0, 120), quality_profile: 'showcase' },
+        meta: { title: String(body.title || ('Topologi ' + layerLabel)).slice(0, 120), quality_profile: 'showcase', viewBox: ARCH_VB },
         components, boundaries: [{ kind: 'region', label: layerLabel, wraps: components.map(c => c.id) }],
         connections: conns,
         cards: [{ dot: 'cyan', title: layerLabel, items: [components.length + ' perangkat', conns.length + ' link', 'FO: ' + fo + ' • LAN: ' + (conns.length - fo)] }],
