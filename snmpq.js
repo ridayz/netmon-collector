@@ -60,4 +60,18 @@ async function ifaces(ip, community) {
     oper: c.oper === '1' ? 'up' : 'down', inOct: Number(c.inOct || 0), outOct: Number(c.outOct || 0),
   }));
 }
-module.exports = { OIDS, get, walk, subtree, ifaces };
+// 1x walk untuk seluruh ifTable (jauh lebih cepat dari 5x subtree)
+async function ifacesFast(ip, community) {
+  const cells = await walk(ip, community, OIDS.ifTable);
+  const byIdx = {};
+  const colName = { 2: 'descr', 7: 'admin', 8: 'oper', 10: 'inOct', 16: 'outOct' };
+  for (const c of cells) {
+    if (!colName[c.col]) continue;
+    (byIdx[c.idx] = byIdx[c.idx] || {})[colName[c.col]] = c.value;
+  }
+  return Object.entries(byIdx).map(([idx, c]) => ({
+    idx: Number(idx), descr: c.descr || '', admin: c.admin === '1' ? 'up' : 'down',
+    oper: c.oper === '1' ? 'up' : 'down', inOct: Number(c.inOct || 0), outOct: Number(c.outOct || 0),
+  }));
+}
+module.exports = { OIDS, get, walk, subtree, ifaces, ifacesFast };

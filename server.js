@@ -390,8 +390,42 @@ const server = http.createServer(async (req, res) => {
       }
       return send(res, 200, { ok: true, nets });
     }
-    if (u.pathname === '/api/netscan') {
-      const net = String(q.net || '');
+    if (u.pathname === '/api/snmpstat') {
+      // ala PRTG: sekali panggil = semua interface + rate + CPU + RAM (butuh SNMP tembus)
+      const ip = q.ip, community = q.community || D.community;
+      if (!ip) throw new Error('param ip wajib');
+      const t0 = Date.now();
+      const a = await snmpq.ifacesFast(ip, community);
+      await sleep(1500);
+      const b = await snmpq.ifacesFast(ip, community);
+      const dt = Math.max(0.8, (Date.now() - t0) / 1000);
+      const bm = Object.fromEntries(b.map(i => [i.idx, i]));
+      const diff = (x, y) => { let d = y - x; if (d < 0) d += 4294967296; return d; };
+      const ifaces = a.filter(i => i.descr).map(i => {
+        const n = bm[i.idx] || i;
+        return { name: i.descr, admin: n.admin, oper: n.oper, dlMbps: +(diff(i.inOct, n.inOct) * 8 / dt / 1e6).toFixed(2), ulMbps: +(diff(i.outOct, n.outOct) * 8 / dt / 1e6).toFixed(2) };
+      });
+      let cpu = null, memPct = null;
+      try {
+        const loads = await snmpq.subtree(ip, community, '1.3.6.1.2.1.25.3.3.1.2');
+        const vals = loads.map(r => Number(r.value)).filter(v => !isNaN(v));
+        if (vals.length) cpu = Math.round(vals.reduce((x, y) => x + y, 0) / vals.length);
+      } catch {}
+      try {
+        const cells = await snmpq.walk(ip, community, '1.3.6.1.2.1.25.2.3.1');
+        const rows = {};
+        for (const c of cells) (rows[c.idx] = rows[c.idx] || {})[c.col] = c.value;
+        for (const idx of Object.keys(rows)) {
+          const r = rows[idx];
+          if (/physical|real memory|memory/i.test(r['3'] || '') && Number(r['5']) > 0) {
+            memPct = Math.round(100 * Number(r['6'] || 0) * Number(r['4'] || 0) / (Number(r['5']) * Number(r['4'] || 0)));
+            break;
+          }
+        }
+      } catch {}
+      return send(res, 200, { ok: true, ip, ifaces, cpu, memPct });
+    }
+    if (u.pathname === '/api/netscan') {      const net = String(q.net || '');
       const m = net.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/);
       if (!m || m.slice(1).some(o => +o > 255)) throw new Error('param net harus /24, cth: 192.168.18.0/24');
       const base = m[1] + '.' + m[2] + '.' + m[3] + '.';
@@ -416,9 +450,22 @@ const server = http.createServer(async (req, res) => {
         s.on('error', () => { clearTimeout(t); fin(false); });
       });
       const hosts = [];
+      let comms = String(q.communities || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 8);
+      comms = [...comms, 'public', 'private', 'netmon'].filter((v, i, a) => a.indexOf(v) === i);
+      const snmpProbe = async ip => {
+        for (const cm of comms) {
+          try {
+            const sys = await snmpq.get(ip, cm, [snmpq.OIDS.sysDescr, snmpq.OIDS.sysName]);
+            const gd = oid => (sys.find(v => v.oid === oid) || {}).value || '';
+            const descr = gd(snmpq.OIDS.sysDescr);
+            if (descr) return { community: cm, sysDescr: descr.slice(0, 120), sysName: gd(snmpq.OIDS.sysName).slice(0, 64) };
+          } catch {}
+        }
+        return null;
+      };
       for (const ip of alive) {
-        const [api, winbox, ssh, http] = await Promise.all([probe(ip, 8728), probe(ip, 8291), probe(ip, 22), probe(ip, 80)]);
-        hosts.push({ ip, ports: [api && '8728-API', winbox && '8291-Winbox', ssh && '22-SSH', http && '80-HTTP'].filter(Boolean) });
+        const [api, winbox, ssh, http, snmp] = await Promise.all([probe(ip, 8728), probe(ip, 8291), probe(ip, 22), probe(ip, 80), snmpProbe(ip)]);
+        hosts.push({ ip, ports: [api && '8728-API', winbox && '8291-Winbox', ssh && '22-SSH', http && '80-HTTP'].filter(Boolean), snmp });
       }
       return send(res, 200, { ok: true, net, count: hosts.length, hosts });
     }
