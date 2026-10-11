@@ -345,20 +345,23 @@ const server = http.createServer(async (req, res) => {
         idMap[n.id] = id;
         return { id, _x: Number(n.x) || 0, _y: Number(n.y) || 0, type: TMAP[n.icon] || 'backend', label: String(n.label || id).slice(0, 48), sublabel: String(n.sub || '').slice(0, 80), tag: String(n.icon || 'node').slice(0, 24) };
       });
-      // normalisasi posisi ke viewBox 1000x560
-      const VW = 1000, VH = 560, M = 110, CW = 150, CH = 64;
+      // normalisasi posisi ke viewBox dinamis (longgar untuk layer padat)
+      const CW = 132, CH = 60;
+      const VW = 1600, VH = 900, M = 180;
       const xs = comps.map(c => c._x), ys = comps.map(c => c._y);
       const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
       const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
       const sc = Math.min((VW - 2 * M - CW) / bw, (VH - 2 * M - CH) / bh);
       const components = comps.map(c => ({ id: c.id, type: c.type, label: c.label, sublabel: c.sublabel, tag: c.tag, pos: [Math.round(M + (c._x - minX) * sc), Math.round(M + (c._y - minY) * sc)], size: [CW, CH] }));
-      // de-collision: gap minimum 24px antar kotak (posisi dashboard manual suka numpuk)
-      for (let it = 0; it < 200; it++) {
+      // de-collision: gap besar antar kotak (stub rute butuh ruang)
+      var ARCH_VB = [1100, 700];
+      const tidy = (iters) => {
+      for (let it = 0; it < (iters || 200); it++) {
         let moved = false;
         for (let i = 0; i < components.length; i++) for (let j = i + 1; j < components.length; j++) {
           const A = components[i], B = components[j];
           const dx = (B.pos[0] + CW / 2) - (A.pos[0] + CW / 2), dy = (B.pos[1] + CH / 2) - (A.pos[1] + CH / 2);
-          const ox = (CW + 24) - Math.abs(dx), oy = (CH + 24) - Math.abs(dy);
+          const ox = (CW + 200) - Math.abs(dx), oy = (CH + 200) - Math.abs(dy);
           if (ox > 0 && oy > 0) {
             moved = true;
             if (ox < oy) { const s = dx === 0 ? 1 : Math.sign(dx), p = ox / 2 + 1; A.pos[0] = Math.round(A.pos[0] - s * p); B.pos[0] = Math.round(B.pos[0] + s * p); }
@@ -374,10 +377,14 @@ const server = http.createServer(async (req, res) => {
       const MG = 60;
       components.forEach(c => { c.pos[0] += MG - rminX; c.pos[1] += MG - rminY; });
       // viewBox minimum skema 320x240, node dirata-tengah kalau kanvas longgar
-      var ARCH_VB = [Math.max(320, Math.ceil(rmaxX - rminX + CW + MG * 2)), Math.max(240, Math.ceil(rmaxY - rminY + CH + MG * 2))];
+      ARCH_VB = [Math.max(320, Math.ceil(rmaxX - rminX + CW + MG * 2)), Math.max(240, Math.ceil(rmaxY - rminY + CH + MG * 2))];
       const cxSh = Math.round((ARCH_VB[0] - (rmaxX - rminX + CW)) / 2) - MG;
       const cySh = Math.round((ARCH_VB[1] - (rmaxY - rminY + CH)) / 2) - MG;
       if (cxSh !== 0 || cySh !== 0) components.forEach(c => { c.pos[0] += cxSh; c.pos[1] += cySh; });
+      };
+      tidy(200);
+      const labelDyMap = {};
+      const buildConns = () => {
       const centers = {};
       components.forEach(c => { centers[c.id] = [c.pos[0] + CW / 2, c.pos[1] + CH / 2]; });
       const conns = [];
@@ -390,39 +397,98 @@ const server = http.createServer(async (req, res) => {
         if (med === 'fo') c.variant = 'emphasis';
         const [fx, fy] = centers[c.from], [tx, ty] = centers[c.to];
         const dx = tx - fx, dy = ty - fy;
-        if (Math.abs(dy) > 100) { c.fromSide = dy >= 0 ? 'bottom' : 'top'; c.toSide = dy >= 0 ? 'top' : 'bottom'; }
-        else if (Math.abs(dx) >= Math.abs(dy)) { c.fromSide = dx >= 0 ? 'right' : 'left'; c.toSide = dx >= 0 ? 'left' : 'right'; }
-        else { c.fromSide = dy >= 0 ? 'bottom' : 'top'; c.toSide = dy >= 0 ? 'top' : 'bottom'; }
+        // sisi = sisi yang saling menghadap (sesuai router otomatis)
+        const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+        let fs, ts;
+        if (ang >= -45 && ang <= 45) { fs = 'right'; ts = 'left'; }
+        else if (ang > 45 && ang < 135) { fs = 'bottom'; ts = 'top'; }
+        else if (ang >= 135 || ang <= -135) { fs = 'left'; ts = 'right'; }
+        else { fs = 'top'; ts = 'bottom'; }
+        c.fromSide = fs; c.toSide = ts;
+        c._pref = [fs, ts];
+        // CATATAN: router archify mengabaikan via dan me-route otomatis dari sisi.
+        // Satu-satunya tuas anti-tabrakan = posisi node (force layout + gap besar).
         conns.push(c);
       });
-      const layerLabel = String(body.layer || 'topologi').slice(0, 80);
-      const fo = links.filter(l => l[2] === 'fo').length;
-      const candidate = {
-        schema_version: 1, diagram_type: 'architecture',
-        meta: { title: String(body.title || ('Topologi ' + layerLabel)).slice(0, 120), quality_profile: 'showcase', viewBox: ARCH_VB },
-        components, boundaries: [{ kind: 'region', label: layerLabel, wraps: components.map(c => c.id) }],
-        connections: conns,
-        cards: [{ dot: 'cyan', title: layerLabel, items: [components.length + ' perangkat', conns.length + ' link', 'FO: ' + fo + ' • LAN: ' + (conns.length - fo)] }],
+      // seimbangkan link per sisi per node (maks 2/sisi) biar port tidak geser jauh
+      const CAP = 2;
+      const sorder = ['top', 'right', 'bottom', 'left'];
+      const byNode = {};
+      conns.forEach(c => {
+        [[c.from, 0], [c.to, 1]].forEach(([nid, end]) => {
+          (byNode[nid] = byNode[nid] || []).push({ c, end });
+        });
+      });
+      for (const nid of Object.keys(byNode)) {
+        const cnt = { top: 0, right: 0, bottom: 0, left: 0 };
+        for (const it of byNode[nid]) {
+          const pref = it.end === 0 ? it.c._pref[0] : it.c._pref[1];
+          const adj = [pref, sorder[(sorder.indexOf(pref) + 1) % 4], sorder[(sorder.indexOf(pref) + 3) % 4]];
+          const pick = adj.find(s => cnt[s] < CAP) || adj.slice().sort((a, b) => cnt[a] - cnt[b])[0];
+          cnt[pick]++;
+          if (it.end === 0) it.c.fromSide = pick; else it.c.toSide = pick;
+        }
+      }
+      conns.forEach(c => { delete c._pref; if (labelDyMap[c.id]) c.labelDy = labelDyMap[c.id]; });
+      return conns;
       };
+      const layerLabel = String(body.layer || 'topologi').slice(0, 80);
+      const buildTag = 'build-' + Date.now().toString(36);
+      const fo = links.filter(l => l[2] === 'fo').length;
       const slug = layerLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30) || 'topo';
       const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
       const base = 'netmon-' + slug + '-' + ts;
       const candPath = OUTDIR + '/' + base + '.architecture.json';
       const htmlPath = OUTDIR + '/' + base + '.html';
-      fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
       const { execFile } = require('child_process');
       const run = (args) => new Promise(resolve => execFile('node', ['bin/archify.mjs', ...args], { cwd: ARCHIFY, timeout: 120000 }, (e, stdout, stderr) => resolve({ code: e ? (e.code || 1) : 0, out: String(stdout || ''), err: String(stderr || '').slice(0, 500) })));
-      let profile = 'showcase';
-      let v = await run(['validate', 'architecture', candPath, '--quality', 'showcase', '--json']);
-      let validation = v.out.slice(0, 2000);
-      try { validation = JSON.parse(v.out); } catch {}
+      const labelFixCount = {};
+      let candidate = null, conns = null, v = null, validation = null, profile = 'showcase';
+      for (let round = 0; round < 6; round++) {
+        conns = buildConns();
+        candidate = {
+          schema_version: 1, diagram_type: 'architecture',
+          meta: { title: String(body.title || ('Topologi ' + layerLabel)).slice(0, 120), quality_profile: 'showcase', viewBox: ARCH_VB },
+          components, boundaries: [{ kind: 'region', label: layerLabel, wraps: components.map(c => c.id) }],
+          connections: conns,
+          cards: [{ dot: 'cyan', title: layerLabel, items: [components.length + ' perangkat', conns.length + ' link', 'FO: ' + fo + ' • LAN: ' + (conns.length - fo), buildTag] }],
+        };
+        fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
+        v = await run(['validate', 'architecture', candPath, '--quality', 'showcase', '--json']);
+        validation = v.out;
+        try { validation = JSON.parse(v.out); } catch {}
+        if (v.code === 0) { profile = 'showcase'; break; }
+        const diags = (validation && validation.diagnostics) || [];
+        const edge = diags.find(d => d.code === 'clean-flow/edge-through-node' && d.evidence && d.evidence.obstacleId);
+        const lab = diags.find(d => d.code === 'composition/label-route-clearance' && d.subject && d.subject.id);
+        if (edge && round < 5) {
+          // geser node penghalang menjauhi segmen (150px tegak lurus)
+          const n = components.find(x => x.id === edge.evidence.obstacleId);
+          const ev = edge.evidence;
+          if (n && ev.from && ev.to) {
+            const mx = (ev.from[0] + ev.to[0]) / 2, my = (ev.from[1] + ev.to[1]) / 2;
+            let vx = (n.pos[0] + CW / 2) - mx, vy = (n.pos[1] + CH / 2) - my;
+            const m = Math.hypot(vx, vy) || 1; vx /= m; vy /= m;
+            n.pos[0] = Math.round(n.pos[0] + vx * 150); n.pos[1] = Math.round(n.pos[1] + vy * 150);
+            tidy(80);
+            continue;
+          }
+        }
+        if (lab && round < 5) {
+          const k = (labelFixCount[lab.subject.id] = (labelFixCount[lab.subject.id] || 0) + 1);
+          if (k === 1) labelDyMap[lab.subject.id] = 24;
+          else if (k === 2) labelDyMap[lab.subject.id] = -24;
+          else { const cc = conns.find(x => x.id === lab.subject.id); if (cc) delete cc.label; }
+          continue;
+        }
+        break;
+      }
       if (v.code !== 0) {
-        // mesh padat gagal komposisi showcase → coba profil standard (dense map), tetap jujur di respons
+        // showcase tidak lolos → coba profil standard (dense map), tetap jujur di respons
         candidate.meta.quality_profile = 'standard';
         fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
         v = await run(['validate', 'architecture', candPath, '--quality', 'standard', '--json']);
-        validation = v.out.slice(0, 2000);
-        try { validation = JSON.parse(v.out); } catch {}
+        try { validation = JSON.parse(v.out); } catch { validation = v.out.slice(0, 2000); }
         if (v.code === 0) profile = 'standard';
       }
       if (v.code !== 0) return send(res, 200, { ok: false, error: 'validasi gagal', validation, log: v.err });
