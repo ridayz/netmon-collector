@@ -310,6 +310,90 @@ const server = http.createServer(async (req, res) => {
       else throw new Error('aksi tidak dikenal');
       return send(res, 200, { ok: true, reply: `✅ ${op.iface} di ${op.ip} udah di-${op.kind === 'iface-disable' ? 'DISABLE' : 'ENABLE'}. Tercatat di log.` });
     }
+    if (u.pathname === '/api/archify-file') {
+      const name = String(q.name || '').replace(/[^a-zA-Z0-9\-.]/g, '');
+      if (!name.endsWith('.html')) throw new Error('file tidak valid');
+      const OUTDIR = process.env.ARCHIFY_OUT || 'C:/Users/ridwan/Documents/Default Project/archify-output';
+      const p = OUTDIR + '/' + name;
+      if (!require('fs').existsSync(p)) throw new Error('file tidak ada');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      return res.end(require('fs').readFileSync(p));
+    }
+    if (u.pathname === '/api/archify-export' && req.method === 'POST') {
+      const body = await new Promise((resolve, reject) => {
+        let b = ''; req.on('data', c => { b += c; if (b.length > 500000) req.destroy(); });
+        req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { reject(new Error('body bukan JSON')); } });
+        req.on('error', reject);
+      });
+      const nodes = body.nodes || [], links = body.links || [];
+      if (!nodes.length) throw new Error('tidak ada node');
+      const ARCHIFY = process.env.ARCHIFY_DIR || 'C:/Users/ridwan/.agents/skills/archify';
+      const OUTDIR = process.env.ARCHIFY_OUT || 'C:/Users/ridwan/Documents/Default Project/archify-output';
+      const fs = require('fs'); try { fs.mkdirSync(OUTDIR, { recursive: true }); } catch {}
+      const TMAP = { internet: 'external', pc: 'frontend', ap: 'frontend', ont: 'frontend', server: 'backend', router: 'backend', switch: 'backend', swpoe: 'backend', firewall: 'security', olt: 'backend' };
+      const seen = new Set();
+      const cid = raw => {
+        let s = String(raw || 'n').replace(/[^a-zA-Z0-9_-]/g, '-');
+        if (/^[0-9-]/.test(s)) s = 'n' + s;
+        let u = s, k = 2;
+        while (seen.has(u)) u = s + '-' + (k++);
+        seen.add(u); return u;
+      };
+      const idMap = {};
+      const comps = nodes.map(n => {
+        const id = cid(n.id);
+        idMap[n.id] = id;
+        return { id, _x: Number(n.x) || 0, _y: Number(n.y) || 0, type: TMAP[n.icon] || 'backend', label: String(n.label || id).slice(0, 48), sublabel: String(n.sub || '').slice(0, 80), tag: String(n.icon || 'node').slice(0, 24) };
+      });
+      // normalisasi posisi ke viewBox 1000x560
+      const VW = 1000, VH = 560, M = 110, CW = 150, CH = 64;
+      const xs = comps.map(c => c._x), ys = comps.map(c => c._y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+      const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+      const sc = Math.min((VW - 2 * M - CW) / bw, (VH - 2 * M - CH) / bh);
+      const components = comps.map(c => ({ id: c.id, type: c.type, label: c.label, sublabel: c.sublabel, tag: c.tag, pos: [Math.round(M + (c._x - minX) * sc), Math.round(M + (c._y - minY) * sc)], size: [CW, CH] }));
+      const centers = {};
+      components.forEach(c => { centers[c.id] = [c.pos[0] + CW / 2, c.pos[1] + CH / 2]; });
+      const conns = [];
+      links.forEach((l, i) => {
+        const [a, b, med, pa, pb] = l;
+        if (!idMap[a] || !idMap[b]) return;
+        const c = { id: 'link-' + (i + 1), from: idMap[a], to: idMap[b] };
+        const lbl = [pa, pb].filter(Boolean).join(' ↔ ').slice(0, 60);
+        if (lbl) c.label = lbl;
+        if (med === 'fo') c.variant = 'emphasis';
+        const [fx, fy] = centers[c.from], [tx, ty] = centers[c.to];
+        const dx = tx - fx, dy = ty - fy;
+        if (Math.abs(dy) > 100) { c.fromSide = dy >= 0 ? 'bottom' : 'top'; c.toSide = dy >= 0 ? 'top' : 'bottom'; }
+        else if (Math.abs(dx) >= Math.abs(dy)) { c.fromSide = dx >= 0 ? 'right' : 'left'; c.toSide = dx >= 0 ? 'left' : 'right'; }
+        else { c.fromSide = dy >= 0 ? 'bottom' : 'top'; c.toSide = dy >= 0 ? 'top' : 'bottom'; }
+        conns.push(c);
+      });
+      const layerLabel = String(body.layer || 'topologi').slice(0, 80);
+      const fo = links.filter(l => l[2] === 'fo').length;
+      const candidate = {
+        schema_version: 1, diagram_type: 'architecture',
+        meta: { title: String(body.title || ('Topologi ' + layerLabel)).slice(0, 120), quality_profile: 'showcase' },
+        components, boundaries: [{ kind: 'region', label: layerLabel, wraps: components.map(c => c.id) }],
+        connections: conns,
+        cards: [{ dot: 'cyan', title: layerLabel, items: [components.length + ' perangkat', conns.length + ' link', 'FO: ' + fo + ' • LAN: ' + (conns.length - fo)] }],
+      };
+      const slug = layerLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30) || 'topo';
+      const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      const base = 'netmon-' + slug + '-' + ts;
+      const candPath = OUTDIR + '/' + base + '.architecture.json';
+      const htmlPath = OUTDIR + '/' + base + '.html';
+      fs.writeFileSync(candPath, JSON.stringify(candidate, null, 1));
+      const { execFile } = require('child_process');
+      const run = (args) => new Promise(resolve => execFile('node', ['bin/archify.mjs', ...args], { cwd: ARCHIFY, timeout: 120000 }, (e, stdout, stderr) => resolve({ code: e ? (e.code || 1) : 0, out: String(stdout || ''), err: String(stderr || '').slice(0, 500) })));
+      const v = await run(['validate', 'architecture', candPath, '--quality', 'showcase', '--json']);
+      let validation = v.out.slice(0, 2000);
+      try { validation = JSON.parse(v.out); } catch {}
+      if (v.code !== 0) return send(res, 200, { ok: false, error: 'validasi gagal', validation, log: v.err });
+      const d = await run(['deliver', 'architecture', candPath, htmlPath, '--quality', 'showcase', '--json']);
+      if (d.code !== 0) return send(res, 200, { ok: false, error: 'deliver gagal', log: (d.out + d.err).slice(0, 2000) });
+      return send(res, 200, { ok: true, file: base + '.html', url: '/api/archify-file?name=' + base + '.html', validation });
+    }
     if (u.pathname === '/api/backup-file') {
       const name = String(q.name || '').replace(/[^a-zA-Z0-9\-.]/g, '');
       if (!name.endsWith('.rsc')) throw new Error('file tidak valid');
