@@ -164,6 +164,31 @@ async function traffic(q) {
   }
 }
 
+// diagnosa dalam (read-only): error counter + dhcp + route + resource, paralel, partial-OK
+async function diagDeep(ip, user, pass) {
+  const u = user || D.user, p = pass || D.pass;
+  const out = { ip };
+  const jobs = [
+    rosQuery(ip, u, p, '/interface/print', { '.proplist': 'name,type,disabled,running,rx-byte,tx-byte,rx-drop,tx-drop,rx-error,tx-error,comment' }, D.port).then(r => {
+      out.ifaces = r.map(i => ({ n: i.name, type: i.type, admin: i.disabled === 'true' ? 'down' : 'up', oper: i.running === 'true' ? 'up' : 'down', rxB: Number(i['rx-byte'] || 0), txB: Number(i['tx-byte'] || 0), drop: Number(i['rx-drop'] || 0) + Number(i['tx-drop'] || 0), err: Number(i['rx-error'] || 0) + Number(i['tx-error'] || 0), comment: i.comment || '' }));
+    }).catch(e => { out.ifaceErr = String(e.message || e).slice(0, 80); }),
+    rosQuery(ip, u, p, '/ip/dhcp-server/lease/print', { '.proplist': 'address,mac-address,status,host-name' }, D.port).then(r => {
+      const act = r.filter(l => (l.status || '').startsWith('bound'));
+      out.dhcp = { total: r.length, bound: act.length, sample: act.slice(0, 5).map(l => l.address + (l['host-name'] ? ' (' + l['host-name'] + ')' : '')) };
+    }).catch(e => { out.dhcpErr = String(e.message || e).slice(0, 80); }),
+    rosQuery(ip, u, p, '/ip/route/print', { '.proplist': 'dst-address,gateway,active' }, D.port).then(r => {
+      const dead = r.filter(x => x.active !== 'true');
+      out.routes = { total: r.length, inactive: dead.slice(0, 5).map(x => (x['dst-address'] || '?') + ' via ' + (x.gateway || '?')) };
+    }).catch(e => { out.routeErr = String(e.message || e).slice(0, 80); }),
+    rosQuery(ip, u, p, '/system/resource/print', {}, D.port).then(r => {
+      const a = r[0] || {};
+      out.res = { board: a['board-name'] || '', version: a.version || '', uptime: a.uptime || '', cpu: a['cpu-load'] != null ? Number(a['cpu-load']) : null };
+    }).catch(e => { out.resErr = String(e.message || e).slice(0, 80); }),
+  ];
+  await Promise.all(jobs);
+  return out;
+}
+
 // snapshot live router buat konteks AI: semua interface (status + rate), resource, dan identitas
 async function snapshot(ip, user, pass) {
   const u = user || D.user, p = pass || D.pass;
@@ -242,23 +267,22 @@ const server = http.createServer(async (req, res) => {
         if (!WU || !WP) return send(res, 200, { ok: true, mode: 'intent', reply: 'Aksi tulis belum dikonfigurasi men. Bikin user tulis dulu di device:\n/user group add name=mon-write policy=api,read,write\n/user add name=netmon-write group=mon-write password=XXXX\nTerus isi W_USER + W_PASS di .env collector + restart.' });
         const dis = /disable|matikan|matiin/.test(mED[1]);
         const op = { kind: dis ? 'iface-disable' : 'iface-enable', ip: t.ip, iface: mED[2] };
-        if (!dis) {
-          await rosQuery(t.ip, WU, WP, '/interface/set', { numbers: op.iface, disabled: 'no' }, D.port);
-          return send(res, 200, { ok: true, mode: 'intent', reply: `✅ ${op.iface} di ${t.ip} udah di-ENABLE. Cek dashboard, harusnya ijo lagi.` });
-        }
         const ticket = mkTicket(op);
-        return send(res, 200, { ok: true, mode: 'intent', reply: `Mau DISABLE ${op.iface} di ${t.ip} — ini mutus koneksi loh. Yakin?`, actions: [{ ticket, label: `✅ Ya, disable ${op.iface}` }] });
+        return send(res, 200, { ok: true, mode: 'intent', reply: dis ? `Mau DISABLE ${op.iface} di ${t.ip} — ini mutus koneksi loh. Klik Setujui + isi login tulis.` : `Mau ENABLE ${op.iface} di ${t.ip}. Klik Setujui + isi login tulis.`, actions: [{ ticket, label: `✅ Setujui: ${dis ? 'disable' : 'enable'} ${op.iface}` }] });
       }
       const baseURL = (body.aiBase && String(body.aiBase).trim()) || process.env.AI_BASE_URL || 'http://localhost:20128/v1';
       const key = (body.aiKey && String(body.aiKey).trim()) || process.env.AI_KEY || '';
       const model = (body.aiModel && String(body.aiModel).trim()) || process.env.AI_MODEL || 'nine-router/auto-failover';
       // snapshot live device terbuka (kalau ada) → AI dapat data nyata, bukan cuma tampilan
-      let snap = null;
+      let snap = null, diag = null, accessed = null;
       const lv = (body.ctx || {}).live;
       if (lv && lv.ip) {
         try { snap = await snapshot(lv.ip, q.user, q.pass); } catch (e) { snap = { error: String(e.message || e).slice(0, 120) }; }
+        if (/troubleshoot|verifikasi|diagnosa|diagnosis|cek |cek$|error|kenapa|masalah|periksa|analisa|down|lemot|lambat/i.test(msg)) {
+          try { diag = await diagDeep(lv.ip, q.user, q.pass); accessed = `${diag.ip} (${(lv.identity || '')}) — ${((diag.ifaces || []).length)} interface dibaca`; } catch (e) { diag = { error: String(e.message || e).slice(0, 120) }; }
+        } else accessed = `${lv.ip} (${lv.identity || ''})`;
       }
-      const ctxAll = { ...(body.ctx || {}), snapshot: snap };
+      const ctxAll = { ...(body.ctx || {}), snapshot: snap, diag };
       const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, ctxAll) });
       // AI boleh mengusulkan perubahan lewat blok ```ros-cmd {json}```. Itu hanya jadi tiket, TIDAK dieksekusi.
       const proposals = [];
@@ -277,7 +301,7 @@ const server = http.createServer(async (req, res) => {
       const cleanReply = reply.replace(/```ros-cmd[\s\S]*?```/g, '').trim();
       const rejected = proposals.filter(p => p.rejected).map(p => '⛔ ditolak: ' + p.rejected);
       const actions = proposals.filter(p => p.ticket).map(p => ({ ticket: p.ticket, label: p.label }));
-      return send(res, 200, { ok: true, model, reply: cleanReply + (rejected.length ? '\n\n' + rejected.join('\n') : ''), actions: actions.length ? actions : undefined });
+      return send(res, 200, { ok: true, model, accessed, reply: cleanReply + (rejected.length ? '\n\n' + rejected.join('\n') : ''), actions: actions.length ? actions : undefined });
     }
     if (u.pathname === '/api/iface-enable') {
       const ip = q.ip, iface = q.iface, user = q.user || process.env.W_USER || '', pass = q.pass || process.env.W_PASS || '';
@@ -295,8 +319,9 @@ const server = http.createServer(async (req, res) => {
       const op = PENDING.get(body.ticket);
       if (!op) throw new Error('tiket tidak valid / kedaluwarsa — minta lagi');
       PENDING.delete(body.ticket);
-      const WU = process.env.W_USER || '', WP = process.env.W_PASS || '';
-      if (!WU || !WP) throw new Error('W_USER/W_PASS belum diisi');
+      const WU = (body.user && String(body.user).trim()) || process.env.W_USER || '';
+      const WP = (body.pass !== undefined ? String(body.pass) : '') || process.env.W_PASS || '';
+      if (!WU || !WP) return send(res, 200, { ok: false, needLogin: true, error: 'Aksi tulis butuh login device. Isi user + password tulis.' });
       if (op.kind === 'iface-disable') await rosQuery(op.ip, WU, WP, '/interface/set', { numbers: op.iface, disabled: 'yes' }, D.port);
       else if (op.kind === 'iface-enable') await rosQuery(op.ip, WU, WP, '/interface/set', { numbers: op.iface, disabled: 'no' }, D.port);
       else if (op.kind === 'ros-cmd') {
@@ -345,6 +370,43 @@ const server = http.createServer(async (req, res) => {
         idMap[n.id] = id;
         return { id, _x: Number(n.x) || 0, _y: Number(n.y) || 0, type: TMAP[n.icon] || 'backend', label: String(n.label || id).slice(0, 48), sublabel: String(n.sub || '').slice(0, 80), tag: String(n.icon || 'node').slice(0, 24) };
       });
+      // susun cerdas: chain -> baris ular, star -> radial (planar, minim silang)
+      const deg = {};
+      links.forEach(l => { const a = idMap[l[0]], b = idMap[l[1]]; if (!a || !b || a === b) return; deg[a] = (deg[a] || 0) + 1; deg[b] = (deg[b] || 0) + 1; });
+      const adjL = {};
+      comps.forEach(c => adjL[c.id] = []);
+      links.forEach(l => { const a = idMap[l[0]], b = idMap[l[1]]; if (!a || !b || a === b) return; adjL[a].push(b); adjL[b].push(a); });
+      const maxDeg = Math.max(0, ...comps.map(c => deg[c.id] || 0));
+      if (maxDeg <= 2 && comps.length > 1) {
+        // chain: jalan dari ujung, susun ular per 6 kolom
+        let start = comps.find(c => (deg[c.id] || 0) === 1) || comps[0];
+        const order = [], seenW = new Set([start.id]);
+        order.push(start.id);
+        for (;;) {
+          const last = order[order.length - 1];
+          const nx = (adjL[last] || []).find(x => !seenW.has(x));
+          if (!nx) break;
+          seenW.add(nx); order.push(nx);
+        }
+        comps.forEach(c => { if (!seenW.has(c.id)) order.push(c.id); });
+        const COLS = 6, SX = 300, SY = 320;
+        order.forEach((id, i) => {
+          const r = Math.floor(i / COLS);
+          let col = i % COLS;
+          if (r % 2 === 1) col = COLS - 1 - col;
+          const c = comps.find(x => x.id === id);
+          c._x = col * SX; c._y = r * SY;
+        });
+      } else if (maxDeg === comps.length - 1 && comps.length > 2) {
+        // star: hub tengah, satelit melingkar
+        const hub = comps.find(c => (deg[c.id] || 0) === maxDeg);
+        const rest = comps.filter(c => c.id !== hub.id);
+        hub._x = 0; hub._y = 0;
+        rest.forEach((c, i) => {
+          const a = (2 * Math.PI * i) / rest.length;
+          c._x = Math.round(Math.cos(a) * 420); c._y = Math.round(Math.sin(a) * 420);
+        });
+      }
       // normalisasi posisi ke viewBox dinamis (longgar untuk layer padat)
       const CW = 132, CH = 60;
       const VW = 1600, VH = 900, M = 180;

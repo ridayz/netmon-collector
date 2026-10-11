@@ -33,7 +33,8 @@ Aturan:
 \`\`\`
   Dilarang mengusulkan path user, reset, atau reboot. Args sesuai API RouterOS (contoh untuk set: kunci atribut, misal "disabled":"no" atau "numbers":"ether3"). Usulan hanya jadi tiket, user harus setujui dulu. Jangan klaim sudah dikerjakan.
 - Jelaskan dampak perubahan sebelum mengusulkannya, terutama yang bisa memutus koneksi.
-- Jawab singkat dan to-the-point. Format: vonis dulu (1-2 baris), lalu bukti (poin-poin dari data), lalu saran. Tanpa basa-basi pembuka.`;
+- Jawab singkat dan to-the-point. Format: vonis dulu (1-2 baris), lalu bukti (poin-poin dari data), lalu saran. Tanpa basa-basi pembuka.
+- Kamu ANALYZER: tidak pernah minta password ke user (aplikasi yang minta login tulis saat eksekusi). Kalau diminta VERIFIKASI: beres → tulis DONE di baris pertama; belum → tulis yang masih salah + usulan baru.`;
 
 function buildMessages(message, ctx) {
   const c = ctx || {};
@@ -51,7 +52,16 @@ function buildMessages(message, ctx) {
       `\nSemua interface (live, DL/UL Mbps):\n` +
       (s.interfaces || []).map(i => `- ${i.n} [${i.type}] admin:${i.admin} oper:${i.oper}${i.comment ? ' ("' + i.comment + '")' : ''} DL:${i.dlMbps} UL:${i.ulMbps}`).join('\n');
   }
-  const context = `DEVICE YANG LAGI DIBUKA: ${dev}\n\nDATA LIVE ROUTER (snapshot sekarang):\n${snapTxt}\n\nStatus dari dashboard:\n${ifs || '(kosong)'}\n\n${lv}\n\nAlarm device ini:\n${alarms || '(tidak ada)'}\n\nRiwayat downtime device ini:\n${down || '(tidak ada)'}`;
+  const dg = c.diag;
+  let diagTxt = '';
+  if (dg && !dg.error) {
+    diagTxt = `\n\nDIAGNOSA DALAM (dieksekusi collector read-only):` +
+      `\n- Interface detail:\n` + ((dg.ifaces || []).map(i => `  - ${i.n} [${i.type}] admin:${i.admin} oper:${i.oper} err:${i.err} drop:${i.drop}${i.comment ? ' ("' + i.comment + '")' : ''}`).join('\n') || '  (kosong)') +
+      `\n- DHCP: ${dg.dhcp ? dg.dhcp.bound + '/' + dg.dhcp.total + ' bound (' + (dg.dhcp.sample || []).join(', ') + ')' : 'n/a ' + (dg.dhcpErr || '')}` +
+      `\n- Route mati: ${(dg.routes && dg.routes.inactive && dg.routes.inactive.length) ? dg.routes.inactive.join('; ') : 'tidak ada (' + ((dg.routes || {}).total || 0) + ' route)'}` +
+      `\n- Resource: ${dg.res ? (dg.res.board + ' ' + dg.res.version + ' up ' + dg.res.uptime + ' CPU ' + (dg.res.cpu ?? '?') + '%') : 'n/a'}`;
+  } else if (dg && dg.error) diagTxt = '\n\nDiagnosa dalam gagal: ' + dg.error;
+  const context = `DEVICE YANG LAGI DIBUKA: ${dev}\n\nDATA LIVE ROUTER (snapshot sekarang):\n${snapTxt}${diagTxt}\n\nStatus dari dashboard:\n${ifs || '(kosong)'}\n\n${lv}\n\nAlarm device ini:\n${alarms || '(tidak ada)'}\n\nRiwayat downtime device ini:\n${down || '(tidak ada)'}`;
   return [
     { role: 'system', content: AI_SYSTEM },
     { role: 'user', content: context + '\n\nPERTANYAAN USER:\n' + message },
