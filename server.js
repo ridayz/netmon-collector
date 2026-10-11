@@ -232,8 +232,44 @@ const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x');
     const q = Object.fromEntries(u.searchParams);
     if (u.pathname === '/health') return send(res, 200, { ok: true, service: 'netmon-collector' });
-    if (u.pathname === '/api/ai-test' && req.method === 'POST') {
-      const body = await new Promise((resolve, reject) => {
+// progres AI per request (dipoll dashboard biar kelihatan hidup)
+const AIPROG = new Map();
+function aiProg(id, stage) {
+  if (!id) return;
+  let e = AIPROG.get(id);
+  if (!e) { e = { t: Date.now(), log: [], done: false }; AIPROG.set(id, e); setTimeout(() => AIPROG.delete(id), 120000).unref?.(); }
+  e.log.push({ at: Date.now(), stage });
+  if (stage === 'selesai' || stage.startsWith('gagal')) e.done = true;
+}
+    if (u.pathname === '/api/ai-progress') {
+      const e = AIPROG.get(q.id);
+      if (!e) return send(res, 200, { ok: true, done: false, stages: [] });
+      return send(res, 200, { ok: true, done: !!e.done, stages: e.log });
+    }
+    if (u.pathname === '/api/diag') {
+      // analyzer lokal TANPA AI key: vonis deterministik dari data read-only
+      const ip = q.ip;
+      if (!ip) throw new Error('param ip wajib');
+      const diag = await diagDeep(ip, q.user, q.pass);
+      const masalah = [], saran = [];
+      (diag.ifaces || []).forEach(i => {
+        if (i.admin === 'down') { masalah.push(`${i.n}: admin DOWN (disable manual/sengaja)`); saran.push(`Enable ${i.n} kalau memang harus nyala`); }
+        else if (i.oper === 'down') {
+          if (i.err > 0 || i.drop > 0) { masalah.push(`${i.n}: DOWN + err ${i.err}/drop ${i.drop} — kabel jelek/konektor`); saran.push(`Cek crimping + ganti kabel ${i.n}`); }
+          else { masalah.push(`${i.n}: DOWN (kabel dicabut / perangkat ujung mati)`); saran.push(`Colok kabel ${i.n} / nyalakan perangkat ujungnya`); }
+        }
+        else if (i.err > 100 || i.drop > 100) { masalah.push(`${i.n}: UP tapi err ${i.err}/drop ${i.drop} tinggi`); saran.push(`Jadwalkan ganti kabel ${i.n}, cek interferensi/negosiasi speed`); }
+      });
+      if (diag.dhcp && diag.dhcp.total > 0) {
+        const pct = Math.round(100 * diag.dhcp.bound / diag.dhcp.total);
+        if (pct >= 90) { masalah.push(`DHCP pool ${pct}% penuh (${diag.dhcp.bound}/${diag.dhcp.total})`); saran.push('Perluas pool / pendekkan lease-time'); }
+      }
+      if (diag.routes && diag.routes.inactive && diag.routes.inactive.length) { masalah.push(`Route mati: ${diag.routes.inactive.join('; ')}`); saran.push('Cek gateway/link route yang mati'); }
+      if (diag.res && diag.res.cpu != null && diag.res.cpu >= 80) { masalah.push(`CPU ${diag.res.cpu}% — overload`); saran.push('Cek firewall rules/conn-track, matikan service nganggur'); }
+      const vonis = !masalah.length ? `SEHAT — ${(diag.ifaces || []).length} interface UP semua, no error` : `ADA ${masalah.length} TEMUAN`;
+      return send(res, 200, { ok: true, ip, vonis, masalah, saran, diag });
+    }
+    if (u.pathname === '/api/ai-test' && req.method === 'POST') {      const body = await new Promise((resolve, reject) => {
         let b = ''; req.on('data', c => { b += c; });
         req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { reject(new Error('body bukan JSON')); } });
         req.on('error', reject);
@@ -285,14 +321,20 @@ const server = http.createServer(async (req, res) => {
       // snapshot live device terbuka (kalau ada) → AI dapat data nyata, bukan cuma tampilan
       let snap = null, diag = null, accessed = null;
       const lv = (body.ctx || {}).live;
+      const reqId = body.reqId || '';
+      aiProg(reqId, 'mulai — target ' + ((lv && lv.ip) || 'belum ada device live'));
       if (lv && lv.ip) {
-        try { snap = await snapshot(lv.ip, q.user, q.pass); } catch (e) { snap = { error: String(e.message || e).slice(0, 120) }; }
+        aiProg(reqId, '📡 baca snapshot ' + lv.ip + ' ...');
+        try { snap = await snapshot(lv.ip, q.user, q.pass); aiProg(reqId, '✔ snapshot ok (' + (((snap || {}).interfaces || []).length) + ' interface)'); } catch (e) { snap = { error: String(e.message || e).slice(0, 120) }; aiProg(reqId, 'gagal snapshot: ' + snap.error); }
         if (/troubleshoot|verifikasi|diagnosa|diagnosis|cek |cek$|error|kenapa|masalah|periksa|analisa|down|lemot|lambat/i.test(msg)) {
-          try { diag = await diagDeep(lv.ip, q.user, q.pass); accessed = `${diag.ip} (${(lv.identity || '')}) — ${((diag.ifaces || []).length)} interface dibaca`; } catch (e) { diag = { error: String(e.message || e).slice(0, 120) }; }
+          aiProg(reqId, '🔍 diagnosa dalam (error/DHCP/route/resource) ...');
+          try { diag = await diagDeep(lv.ip, q.user, q.pass); accessed = `${diag.ip} (${(lv.identity || '')}) — ${((diag.ifaces || []).length)} interface dibaca`; aiProg(reqId, '✔ diagnosa ok'); } catch (e) { diag = { error: String(e.message || e).slice(0, 120) }; aiProg(reqId, 'gagal diagnosa: ' + diag.error); }
         } else accessed = `${lv.ip} (${lv.identity || ''})`;
       }
       const ctxAll = { ...(body.ctx || {}), snapshot: snap, diag };
+      aiProg(reqId, '🤖 kirim ke AI (' + model + ') ...');
       const reply = await aiAsk({ baseURL, key, model, messages: buildMessages(body.message, ctxAll) });
+      aiProg(reqId, '✔ AI jawab, proses tiket ...');
       // AI boleh mengusulkan perubahan lewat blok ```ros-cmd {json}```. Itu hanya jadi tiket, TIDAK dieksekusi.
       const proposals = [];
       const reCmd = /```ros-cmd\s*([\s\S]*?)```/g; let mm;
@@ -310,6 +352,7 @@ const server = http.createServer(async (req, res) => {
       const cleanReply = reply.replace(/```ros-cmd[\s\S]*?```/g, '').trim();
       const rejected = proposals.filter(p => p.rejected).map(p => '⛔ ditolak: ' + p.rejected);
       const actions = proposals.filter(p => p.ticket).map(p => ({ ticket: p.ticket, label: p.label }));
+      aiProg(reqId, 'selesai');
       return send(res, 200, { ok: true, model, accessed, reply: cleanReply + (rejected.length ? '\n\n' + rejected.join('\n') : ''), actions: actions.length ? actions : undefined });
     }
     if (u.pathname === '/api/iface-enable') {
