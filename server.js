@@ -373,7 +373,11 @@ const server = http.createServer(async (req, res) => {
       const rmaxX = Math.max(...rx), rmaxY = Math.max(...ry);
       const MG = 60;
       components.forEach(c => { c.pos[0] += MG - rminX; c.pos[1] += MG - rminY; });
-      var ARCH_VB = [Math.ceil(rmaxX - rminX + CW + MG * 2), Math.ceil(rmaxY - rminY + CH + MG * 2)];
+      // viewBox minimum skema 320x240, node dirata-tengah kalau kanvas longgar
+      var ARCH_VB = [Math.max(320, Math.ceil(rmaxX - rminX + CW + MG * 2)), Math.max(240, Math.ceil(rmaxY - rminY + CH + MG * 2))];
+      const cxSh = Math.round((ARCH_VB[0] - (rmaxX - rminX + CW)) / 2) - MG;
+      const cySh = Math.round((ARCH_VB[1] - (rmaxY - rminY + CH)) / 2) - MG;
+      if (cxSh !== 0 || cySh !== 0) components.forEach(c => { c.pos[0] += cxSh; c.pos[1] += cySh; });
       const centers = {};
       components.forEach(c => { centers[c.id] = [c.pos[0] + CW / 2, c.pos[1] + CH / 2]; });
       const conns = [];
