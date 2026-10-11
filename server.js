@@ -354,6 +354,48 @@ const server = http.createServer(async (req, res) => {
       const ok = /TTL=|ttl=|bytes (from|von)/i.test(out.stdout);
       return send(res, 200, { ok, ip: q.ip, ms: m ? Number(m[1]) : null, raw: out.stdout.split('\n').slice(-3).join(' ').slice(0, 120) });
     }
+    if (u.pathname === '/api/localnets') {
+      const os = require('os');
+      const nets = [];
+      for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+        for (const a of (addrs || [])) {
+          if (a.family !== 'IPv4' || a.internal || !a.address) continue;
+          const p = a.address.split('.');
+          if (p.length !== 4) continue;
+          nets.push({ if: name, ip: a.address, cidr: p.slice(0, 3).join('.') + '.0/24' });
+        }
+      }
+      return send(res, 200, { ok: true, nets });
+    }
+    if (u.pathname === '/api/netscan') {
+      const net = String(q.net || '');
+      const m = net.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/);
+      if (!m || m.slice(1).some(o => +o > 255)) throw new Error('param net harus /24, cth: 192.168.18.0/24');
+      const base = m[1] + '.' + m[2] + '.' + m[3] + '.';
+      const { execFile } = require('child_process');
+      const pingOne = ip => new Promise(resolve => {
+        execFile('ping', ['-n', '1', '-w', '800', ip], { timeout: 3000 }, (err, stdout) => resolve(/TTL=\d+/i.test(String(stdout || '')) ? ip : null));
+      });
+      const ips = []; for (let i = 1; i < 255; i++) ips.push(base + i);
+      const alive = [];
+      for (let i = 0; i < ips.length; i += 64) {
+        const batch = await Promise.all(ips.slice(i, i + 64).map(pingOne));
+        batch.forEach(x => { if (x) alive.push(x); });
+      }
+      const probe = (ip, port) => new Promise(resolve => {
+        let done = false; const fin = v => { if (!done) { done = true; try { s.destroy(); } catch {} resolve(v); } };
+        const s = require('net').connect(port, ip);
+        const t = setTimeout(() => fin(false), 1200);
+        s.on('connect', () => { clearTimeout(t); fin(true); });
+        s.on('error', () => { clearTimeout(t); fin(false); });
+      });
+      const hosts = [];
+      for (const ip of alive) {
+        const [api, winbox, ssh, http] = await Promise.all([probe(ip, 8728), probe(ip, 8291), probe(ip, 22), probe(ip, 80)]);
+        hosts.push({ ip, ports: [api && '8728-API', winbox && '8291-Winbox', ssh && '22-SSH', http && '80-HTTP'].filter(Boolean) });
+      }
+      return send(res, 200, { ok: true, net, count: hosts.length, hosts });
+    }
     return send(res, 404, { ok: false, error: 'unknown endpoint' });
   } catch (e) { send(res, 500, { ok: false, error: String(e.message || e) }); }
 });
