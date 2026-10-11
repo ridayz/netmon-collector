@@ -372,11 +372,14 @@ const server = http.createServer(async (req, res) => {
       const m = net.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/);
       if (!m || m.slice(1).some(o => +o > 255)) throw new Error('param net harus /24, cth: 192.168.18.0/24');
       const base = m[1] + '.' + m[2] + '.' + m[3] + '.';
+      const os = require('os');
+      const own = new Set();
+      for (const addrs of Object.values(os.networkInterfaces())) for (const a of (addrs || [])) if (a.family === 'IPv4' && a.address) own.add(a.address);
       const { execFile } = require('child_process');
       const pingOne = ip => new Promise(resolve => {
         execFile('ping', ['-n', '1', '-w', '800', ip], { timeout: 3000 }, (err, stdout) => resolve(/TTL=\d+/i.test(String(stdout || '')) ? ip : null));
       });
-      const ips = []; for (let i = 1; i < 255; i++) ips.push(base + i);
+      const ips = []; for (let i = 1; i < 255; i++) { const ip = base + i; if (!own.has(ip)) ips.push(ip); }
       const alive = [];
       for (let i = 0; i < ips.length; i += 64) {
         const batch = await Promise.all(ips.slice(i, i + 64).map(pingOne));
